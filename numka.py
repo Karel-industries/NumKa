@@ -85,6 +85,7 @@ class FnPrototypeAst:
     name: str
     line_of_definition: int
     ending_line_of_definition: int
+
     template_args: tuple
     
     # if matches top-level requrements (no templates, no commit) it will get compiled into output even when never used
@@ -96,27 +97,18 @@ class FnPrototypeAst:
     src_file: str
 
 @dataclasses.dataclass(kw_only=True)
-class LambdaInstanceAst:
-    owning_fn: FnPrototypeAst
-    template_args: dict = dataclasses.field(default_factory=dict)
-
-    owning_lambdas: list = dataclasses.field(default_factory=list)
-    tracked_stack_slices: list = dataclasses.field(default_factory=list)
-
-    compiled_segments: list = dataclasses.field(default_factory=list)
-
-@dataclasses.dataclass(kw_only=True)
 class FnInstanceAst:
     name: str
     comp_name: str
 
-    owning_lambdas: list[LambdaInstanceAst] = dataclasses.field(default_factory=list[LambdaInstanceAst])
+    owning_lambdas: list = dataclasses.field(default_factory=list)
     tracked_stack_slices: list = dataclasses.field(default_factory=list)
 
     compiled_segments: list[str] = dataclasses.field(default_factory=list[str])
 
     commit_fn_proto: FnPrototypeAst | None = None
     instance_template_args: tuple
+    inherited_template_args: tuple = dataclasses.field(default_factory=tuple)
 
 @dataclasses.dataclass(kw_only=True)
 class CallLocationAst:
@@ -124,6 +116,7 @@ class CallLocationAst:
     callee_fn_name: str
 
     template_args: tuple
+    inherited_template_args: tuple = dataclasses.field(default_factory=tuple)
     callee_commit_dest_fn: FnPrototypeAst | None
 
     src: list[str]
@@ -210,23 +203,102 @@ def parse_contition(src: list, src_file: str, src_line: int, cond_exp: str, args
     else:
         raise CompileError(f"syntax error - unknown condition \"{orig_cond_exp.strip()}\"", src_file, src_line, src)
 
+def parse_fn(src: list, src_file: str, define_line_index: int, lambda_owner: FnInstanceAst | None, args: argparse.Namespace) -> FnPrototypeAst:
+    tem_args, tem_end = parse_template_args(src, src_file, define_line_index, src[define_line_index], args)
+    
+    if lambda_owner == None:
+        fn_name = src[define_line_index].split('//', 1)[0].strip()[3:].lstrip().split('(', 1)[0].rstrip(" {")
+
+        if ' ' in fn_name:
+            raise CompileError("syntax error - fn name cannot contain spaces", src_file, define_line_index, src)
+        elif fn_name in builtit_reserved:
+            raise CompileError(f"syntax error - \"{fn_name}\" is a reserved keyword by karel-lang", src_file, define_line_index, src)
+    else:
+        fn_name = f"{lambda_owner.name}_lambda_n{len(lambda_owner.owning_lambdas)}"
+
+    # find end of fn
+    
+    end_line = -1
+    clousure_depth = 0
+
+    for i, line in enumerate(src[define_line_index:]):
+        for j, char in enumerate(line):
+            if char == '{':
+                clousure_depth += 1
+
+            elif char == '}':
+                clousure_depth -= 1
+                
+                if clousure_depth == 0:
+                    end_line = i + define_line_index
+
+                    if not j + 1 == len(line.split('//', 1)[0]) and lambda_owner == None:
+                        raise CompileError("syntax error - expected a new line after fn final \'}\'", src_file, i + define_line_index, src) 
+
+                    break
+                elif clousure_depth < 0:
+                    raise CompileError("syntax error - unexpected '}' before any '{'", src_file, i + define_line_index, src)
+        
+        if not end_line == -1:
+            break
+    
+    if end_line == -1:
+        raise CompileError(f"syntax error - fn \"{fn_name}\" never closed (did you forget a \'{'}'}\'?)", src_file, len(src) - 1, src)
+
+    # create fn ast
+
+    if fn_name in defined_fn_prototypes:
+        raise CompileError(f"redefinition of fn \"{fn_name}\" first defined at \"{defined_fn_prototypes[fn_name].src_file}\":{defined_fn_prototypes[fn_name].line_of_definition + 1}", src_file, define_line_index, src)
+
+    # strip fn source for compile stage
+
+    fn_src = src[define_line_index:end_line + 1]
+    for i in range(len(fn_src)):
+        l = fn_src[i]
+
+        # strip comments
+        l = l.split('//', 1)[0]
+
+        l = l.strip()
+
+        fn_src[i] = l + '\n'
+
+    # test for top-level implicit usage
+
+    inline_fn_src = ''.join(fn_src)
+    implicit_usage = True
+
+    # must not use templates to be implicitly used
+    if not len(tem_args) == 0:
+        implicit_usage = False
+
+    # must not use the commit keyword to be implicitly used
+    # FIXME: might give false positive with a fn name that ends with 'commit'
+    elif "commit(" in inline_fn_src or "commit " in inline_fn_src or "commit;" in inline_fn_src:
+        implicit_usage = False
+
+    fn = FnPrototypeAst(name=fn_name, fn_src=inline_fn_src, src=src, src_file=src_file, ending_line_of_definition=end_line, line_of_definition=define_line_index, template_args=tem_args, top_level_implicit_usage=implicit_usage)
+    defined_fn_prototypes[fn_name] = fn
+
+    return fn
+
 # returns a precompiled FnInstanceAst if it has already been compiled with the same template args and commit fn 
-def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argparse.Namespace) -> FnInstanceAst:
+def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argparse.Namespace, inherited_template_args: tuple = tuple()) -> FnInstanceAst:
     i = 0
     line_index = fn_proto.line_of_definition
 
     # create fn instance ast
 
     if not args.g:
-        comp_name = fn_proto.name.upper() + f"<cl-{call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'}-th{hash(call_loc.template_args)}>"
+        comp_name = fn_proto.name + f"<cl-{call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'}-th{hash(call_loc.template_args + call_loc.inherited_template_args)}>"
     else:
-        comp_name = fn_proto.name.upper() + f"<commit-loc: {call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'} | template-args: {call_loc.template_args}>"
+        comp_name = fn_proto.name + f"<commit-loc: {call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'} | template-args: {call_loc.template_args}{f' + inherited: {call_loc.inherited_template_args}' if len(call_loc.inherited_template_args) > 0 else ''} >"
 
     # return FnInstanceAst if already compiled an instance with the same template set and commit fn
     if comp_name in instaciated_fns:
         return instaciated_fns[comp_name]
 
-    fn = FnInstanceAst(name=fn_proto.name, comp_name=comp_name, commit_fn_proto=call_loc.callee_commit_dest_fn, instance_template_args=call_loc.template_args)
+    fn = FnInstanceAst(name=fn_proto.name, comp_name=comp_name, commit_fn_proto=call_loc.callee_commit_dest_fn, instance_template_args=call_loc.template_args, inherited_template_args=call_loc.template_args + call_loc.inherited_template_args)
     instaciated_fns[comp_name] = fn
 
     # define function in output source
@@ -307,7 +379,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 try:
                     count = int(acc, base=0)
                     acc = acc[len(str(count)):]
-                except ValueError as e:
+                except ValueError:
                     raise CompileError("for loop count is not convertible to an integer", src_file, line_index, fn_proto.src)
 
                 if not acc.strip() == '':
@@ -322,8 +394,89 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             elif acc.startswith("fn "):
                 raise CompileError("syntax error - fn definitions are not allowed inside fn bodies (did you forget a \'}\'?)", src_file, line_index, fn_proto.src)
             else:
-                # TODO: lambda parsing
-                pass
+                # parse lambda for this fn instance
+
+                fn_name = f"{fn.name}_lambda_n{len(fn.owning_lambdas)}"
+
+                if fn_name in defined_fn_prototypes:
+                    lambda_proto =  defined_fn_prototypes[fn_name] 
+                else:
+                    lambda_proto = parse_fn(fn_proto.src, src_file, line_index, fn, args)
+
+                # offset to lambdas end
+
+                clousure_depth = 0
+                while i < len(fn_src):
+                    char = fn_src[i]
+                    
+                    if char == '\n':
+                        line_index += 1
+
+                    if char == '{':
+                        clousure_depth += 1
+
+                    elif char == '}':
+                        clousure_depth -= 1
+
+                        if clousure_depth == 0:
+                            break
+                    
+                    i += 1
+
+                # parse out the template instanciation args
+
+                l_acc = ''
+
+                while i < len(fn_src):
+                    c = fn_src[i]
+
+                    if c == '\n':
+                        line_index += 1
+                        l_acc += ' '
+
+                        if not len(l_acc) == 0 and not l_acc[-1] == ' ':
+                            l_acc += ' '
+                    elif c == ' ' and not len(l_acc) == 0 and not l_acc[-1] == ' ':
+                        l_acc += ' '
+                    elif c == ';':
+                        break
+                    else:
+                        l_acc += c
+                    
+                    i += 1
+
+                # compile lambda fn instance
+                tem_args, read_size = parse_template_args(fn_proto.src, src_file, line_index, l_acc, args)
+
+                if not read_size == 0:
+                    l_acc = l_acc[read_size + 1:]
+                else:
+                    l_acc = l_acc[1:]
+                
+                l_acc = l_acc.strip()
+
+                if not l_acc == '':
+                    raise CompileError("syntax error - expected a \';\' after a lambda definition", src_file, line_index, fn_proto.src)
+
+                lambda_call_loc = CallLocationAst(
+                    caller_fn_name=fn_proto.name,
+                    callee_fn_name=lambda_proto.name,
+                    template_args=tem_args,
+                    inherited_template_args=fn.inherited_template_args,
+                    callee_commit_dest_fn=call_loc.callee_commit_dest_fn, # lambdas can commit parents pushes
+                    src=fn_proto.src,
+                    src_file=fn_proto.src_file,
+                    caller_line_index=line_index
+                )
+
+                # note: includes callers templates in the template hash, as parents template args can affect a child lambda
+                lambda_fn_instance = compile_fn(lambda_proto, lambda_call_loc, args, fn.inherited_template_args)
+
+                # call lambda
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{lambda_fn_instance.comp_name}\n"))
+
+                fn.owning_lambdas.append(lambda_fn_instance)
+                block_clousure_depth -= 1
 
             acc = ""
         
@@ -365,7 +518,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                         raise CompileError(f"syntax error - expected a ';' after a recall keyword", src_file, line_index, fn_proto.src)
 
                 # recompile fn with possibly new template args
-                call_loc = CallLocationAst(
+                recall_loc = CallLocationAst(
                     caller_fn_name=fn_proto.name, 
                     callee_fn_name=fn_proto.name,
                     template_args=tem_args,
@@ -375,7 +528,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     caller_line_index=line_index
                 )
 
-                recall_fn_instance = compile_fn(fn_proto, call_loc, args)
+                recall_fn_instance = compile_fn(fn_proto, recall_loc, args)
 
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, recall_fn_instance.comp_name, '\n'))
             elif acc.startswith("commit"):
@@ -434,7 +587,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 if callee_fn is None:
                     raise CompileError(f"call to an undefined fn \"{acc}\"", src_file, line_index, fn_proto.src)
 
-                call_loc = CallLocationAst(
+                fn_call_loc = CallLocationAst(
                     caller_fn_name=fn_proto.name,
                     callee_fn_name=acc,
                     template_args=tem_args,
@@ -444,7 +597,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     caller_line_index=line_index
                 )
 
-                callee_fn_instance = compile_fn(callee_fn, call_loc, args)
+                callee_fn_instance = compile_fn(callee_fn, fn_call_loc, args)
 
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{callee_fn_instance.comp_name}\n"))
             
@@ -455,90 +608,14 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
         i += 1
     
     if i == len(fn_src):
-        raise CompileError("unexpected end of file, fn {fn_name} never closed (did you forget a \'}\'?)", src_file, i - 1, fn_proto.src)
+        raise CompileError(f"unexpected end of file, fn \"{fn.name}\" never closed (did you forget a \'{'}'}\'?)", src_file, i - 1, fn_proto.src)
 
     # assemble owned compiled segments in output
 
     global output_source
 
     for seg in fn.compiled_segments:
-        output_source = ''.join((output_source, seg))
-
-    return fn
-
-def parse_fn(src: list, src_file: str, define_line_index: int, args: argparse.Namespace) -> FnPrototypeAst:
-    tem_args, tem_end = parse_template_args(src, src_file, define_line_index, src[define_line_index], args)
-    
-    fn_name = src[define_line_index].split('//', 1)[0].strip()[3:].lstrip().split('(', 1)[0].rstrip(" {")
-    
-    if ' ' in fn_name:
-        raise CompileError("syntax error - fn name cannot contain spaces", src_file, define_line_index, src)
-    elif fn_name in builtit_reserved:
-        raise CompileError(f"syntax error - \"{fn_name}\" is a reserved keyword by karel-lang", src_file, define_line_index, src)
-    
-    # find end of fn
-    
-    end_line = -1
-    clousure_depth = 0
-
-    for i, line in enumerate(src[define_line_index:]):
-        for j, char in enumerate(line):
-            if char == '{':
-                clousure_depth += 1
-
-            elif char == '}':
-                clousure_depth -= 1
-                
-                if clousure_depth == 0:
-                    end_line = i + define_line_index
-
-                    if not j + 1 == len(line.split('//', 1)[0].strip()):
-                        raise CompileError("syntax error - expected a new line after fn final \'}\'", src_file, i + define_line_index, src) 
-
-                    break
-                elif clousure_depth < 0:
-                    raise CompileError("syntax error - unexpected '}' before any '{'", src_file, i + define_line_index, src)
-        
-        if not end_line == -1:
-            break
-    
-    if end_line == -1:
-        raise CompileError(f"syntax error - fn \"{fn_name}\" never closed (did you forget a \'{'}'}\'?)", src_file, len(src) - 1, src)
-
-    # create fn ast
-
-    if fn_name in defined_fn_prototypes:
-        raise CompileError(f"redefinition of fn \"{fn_name}\" first defined at \"{defined_fn_prototypes[fn_name].src_file}\":{defined_fn_prototypes[fn_name].line_of_definition + 1}", src_file, define_line_index, src)
-
-    # strip fn source for compile stage
-
-    fn_src = src[define_line_index:end_line + 1]
-    for i in range(len(fn_src)):
-        l = fn_src[i]
-
-        # strip comments
-        l = l.split('//', 1)[0]
-
-        l = l.strip()
-
-        fn_src[i] = l + '\n'
-
-    # test for top-level implicit usage
-
-    inline_fn_src = ''.join(fn_src)
-    implicit_usage = True
-
-    # must not use templates to be implicitly used
-    if not len(tem_args) == 0:
-        implicit_usage = False
-
-    # must not use the commit keyword to be implicitly used
-    # FIXME: might give false positive with a fn name that ends with 'commit'
-    elif "commit(" in inline_fn_src or "commit " in inline_fn_src or "commit;" in inline_fn_src:
-        implicit_usage = False
-
-    fn = FnPrototypeAst(name=fn_name, fn_src=inline_fn_src, src=src, src_file=src_file, ending_line_of_definition=end_line, line_of_definition=define_line_index, template_args=tem_args, top_level_implicit_usage=implicit_usage)
-    defined_fn_prototypes[fn_name] = fn
+        output_source = ''.join((output_source, seg.upper()))
 
     return fn
 
@@ -574,7 +651,7 @@ def compile_source_file(src_file: str, args: argparse.Namespace) -> None:
         elif l.startswith("fn "):
             l = l[3:].lstrip()
 
-            fn = parse_fn(src, src_file, i, args)
+            fn = parse_fn(src, src_file, i, None, args)
 
             if fn.top_level_implicit_usage:
                 call_loc = CallLocationAst(
