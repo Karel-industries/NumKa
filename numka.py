@@ -167,8 +167,35 @@ def parse_template_args(src: list, src_file: str, src_line: int, call_exp: str, 
 
     return (template_args, j)
 
-def parse_contition(src: list, src_file: str, src_line: int, cond_exp: str, args: argparse.Namespace) -> str:
-    pass
+def parse_contition(src: list, src_file: str, src_line: int, cond_exp: str, args: argparse.Namespace) -> tuple[str, int]:
+    size_read = 0
+    orig_cond_exp = cond_exp
+    
+    if cond_exp.startswith("is_"):
+        cond_exp = cond_exp[3:]
+        size_read += 3
+        invert_prefix = "IS "
+    elif cond_exp.startswith("not_"):
+        cond_exp = cond_exp[4:]
+        size_read += 4
+        invert_prefix = "ISNOT "
+    else:
+        raise CompileError("syntax error - condition must start with 'is_' or 'not_'", src_file, src_line, src)
+
+    if cond_exp.startswith("wall "):
+        return (invert_prefix + "WALL", 5 + size_read)
+    elif cond_exp.startswith("flag "):
+        return (invert_prefix + "FLAG", 5 + size_read)
+    elif cond_exp.startswith("north "):
+        return (invert_prefix + "NORTH", 6 + size_read)
+    elif cond_exp.startswith("south "):
+        return (invert_prefix + "SOUTH", 6 + size_read)
+    elif cond_exp.startswith("east "):
+        return (invert_prefix + "EAST", 5 + size_read)
+    elif cond_exp.startswith("west "):
+        return (invert_prefix + "WEST", 5 + size_read)
+    else:
+        raise CompileError(f"syntax error - unknown condition \"{orig_cond_exp.strip()}\"", src_file, src_line, src)
 
 # returns a precompiled FnInstanceAst if it has already been compiled with the same template args and commit fn 
 def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argparse.Namespace) -> FnInstanceAst:
@@ -191,8 +218,6 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
     current_comp_segment = ""
     current_comp_segment_depth = 1
     block_clousure_depth = 1
-
-    fn.compiled_segments.append(current_comp_segment)
 
     current_comp_segment = ''.join((current_comp_segment, fn.comp_name, '\n'))
 
@@ -236,14 +261,50 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             if '=' in acc:
                 # TODO: slice assigment
                 pass
-            elif acc.startswith("if"):
-                pass
-            elif acc.startswith("while"):
-                pass
-            elif acc.startswith("for"):
-                pass
-            elif acc.startswith("fn"):
-                raise CompileError(f"syntax error - fn definitions are not allowed inside fn bodies (did you forget a \'{'}'}\'?)", src_file, line_index, fn_proto.src)
+            elif acc.startswith("if "):
+                acc = acc[3:]
+
+                cond = parse_contition(fn_proto.src, src_file, line_index, acc, args)
+                acc = acc[cond[1]:]
+
+                if not acc.strip() == '':
+                    raise CompileError("syntax error - expected a \'{\' after an if statement", src_file, line_index, fn_proto.src)
+
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"IF {cond[0]}\n"))
+                current_comp_segment_depth += 1
+
+            elif acc.startswith("while "):
+                acc = acc[6:]
+
+                cond = parse_contition(fn_proto.src, src_file, line_index, acc, args)
+                acc = acc[cond[1]:]
+
+                if not acc.strip() == '':
+                    raise CompileError("syntax error - expected a \'{\' after a while statement", src_file, line_index, fn_proto.src)
+
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"UNTIL {cond[0]}\n"))
+                current_comp_segment_depth += 1
+
+            elif acc.startswith("for "):
+                acc = acc[4:]
+
+                try:
+                    count = int(acc, base=0)
+                    acc = acc[len(str(count)):]
+                except ValueError as e:
+                    raise CompileError("for loop count is not convertible to an integer", src_file, line_index, fn_proto.src)
+
+                if not acc.strip() == '':
+                    raise CompileError("syntax error - expected a \'{\' after a for statement", src_file, line_index, fn_proto.src)
+
+                if count > args.max_for_count:
+                    warn_print(src_file, f"for loop count {count} is greater than the safe maximum of {args.max_for_count}", line_index, fn_proto.src)
+
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"REPEAT {count}-TIMES\n"))
+                current_comp_segment_depth += 1
+
+            elif acc.startswith("fn "):
+                raise CompileError("syntax error - fn definitions are not allowed inside fn bodies (did you forget a \'}\'?)", src_file, line_index, fn_proto.src)
             else:
                 # TODO: lambda parsing
                 pass
@@ -254,8 +315,13 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             # end block
             acc = ""
 
+            current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"END\n"))
+            current_comp_segment_depth -= 1
+
             block_clousure_depth -= 1
             if block_clousure_depth == 0:
+                fn.compiled_segments.append(current_comp_segment)
+
                 return fn
 
         elif c == ';':
@@ -309,7 +375,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                         raise CompileError(f"syntax error - expected a ';' after a commit keyword", src_file, line_index, fn_proto.src)
 
                     # compile target commit location
-                    call_loc = CallLocationAst(
+                    commit_loc = CallLocationAst(
                         caller_fn_name=fn_proto.name, 
                         callee_fn_name=call_loc.callee_commit_dest_fn.name,
                         template_args=tem_args,
@@ -319,7 +385,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                         caller_line_index=line_index
                     )
 
-                    commit_dest_fn = compile_fn(call_loc.callee_commit_dest_fn, call_loc, args)
+                    commit_dest_fn = compile_fn(call_loc.callee_commit_dest_fn, commit_loc, args)
 
                     current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, commit_dest_fn.comp_name, '\n'))
                 else:
@@ -514,6 +580,8 @@ if __name__ == '__main__':
     parser.add_argument('-o', metavar='output_file', help='output karel-lang file. all source files will be compiled into this file')
     parser.add_argument('-I', metavar='import_dirs', action='append', help='add a directory to import search paths')
     parser.add_argument('-v', default=False, action='store_true', help='enable verbose mode, will print internal asts')
+
+    parser.add_argument('-lmax-for-loop-count', dest='max_for_count', default=65535, type=int, help='max safe amount of iterations for a single for loop')
 
     parser.add_argument('source_files', nargs='*', default=[], help='source files to compile')
 
