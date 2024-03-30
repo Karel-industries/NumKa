@@ -12,6 +12,18 @@ output_source = ""
 defined_fn_prototypes = {}
 instaciated_fns = {}
 
+builtin_fns = {
+    "step": "STEP",
+    "left": "LEFT",
+    "pick": "PICK",
+    "place": "PLACE",
+    "stop": "STOP",
+}
+
+builtit_reserved = {
+    "end", "until", "repeat"
+}
+
 # == compiler utils ==
 
 bold_escape = "\x1b[1m"
@@ -83,11 +95,21 @@ class FnPrototypeAst:
     src_file: str
 
 @dataclasses.dataclass(kw_only=True)
+class LambdaInstanceAst:
+    owning_fn: FnPrototypeAst
+    template_args: dict = dataclasses.field(default_factory=dict)
+
+    owning_lambdas: list = dataclasses.field(default_factory=list)
+    tracked_stack_slices: list = dataclasses.field(default_factory=list)
+
+    compiled_segments: list = dataclasses.field(default_factory=list)
+
+@dataclasses.dataclass(kw_only=True)
 class FnInstanceAst:
     name: str
     comp_name: str
 
-    owning_lambdas: list = dataclasses.field(default_factory=list)
+    owning_lambdas: list[LambdaInstanceAst] = dataclasses.field(default_factory=list[LambdaInstanceAst])
     tracked_stack_slices: list = dataclasses.field(default_factory=list)
 
     compiled_segments: list[str] = dataclasses.field(default_factory=list[str])
@@ -106,16 +128,6 @@ class CallLocationAst:
     src: list[str]
     src_file: str
     caller_line_index: int
-
-@dataclasses.dataclass(kw_only=True)
-class LambdaInstanceAst:
-    owning_fn: FnPrototypeAst
-    template_args: dict = dataclasses.field(default_factory=dict)
-
-    owning_lambdas: list = dataclasses.field(default_factory=list)
-    tracked_stack_slices: list = dataclasses.field(default_factory=list)
-
-    compiled_segments: list = dataclasses.field(default_factory=list)
 
 # == compiler ==
 
@@ -230,7 +242,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
     for i, arg in enumerate(fn_proto.template_args):
         fn_src = fn_src.replace('[' + arg + ']', call_loc.template_args[i])
 
-    # compile fn bodies
+    # parse and compile fn segments
 
     while fn_src[i] != '{':
         i += 1
@@ -315,14 +327,14 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             # end block
             acc = ""
 
-            current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"END\n"))
             current_comp_segment_depth -= 1
+            current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"END\n"))
 
             block_clousure_depth -= 1
             if block_clousure_depth == 0:
                 fn.compiled_segments.append(current_comp_segment)
 
-                return fn
+                break
 
         elif c == ';':
             # parse expression
@@ -333,6 +345,8 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"PLACE\n"))
             elif acc == "--":
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"PICK\n"))
+            elif acc in builtin_fns:
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_fns[acc]}\n"))
             elif acc.startswith("recall"):
                 tem_args, size_read = parse_template_args(fn_proto.src, fn_proto.src_file, line_index, acc, args)
                 
@@ -436,7 +450,17 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
         i += 1
     
-    raise CompileError("unexpected end of file, fn {fn_name} never closed (did you forget a \'}\'?)", src_file, i - 1, fn_proto.src)
+    if i == len(fn_src):
+        raise CompileError("unexpected end of file, fn {fn_name} never closed (did you forget a \'}\'?)", src_file, i - 1, fn_proto.src)
+
+    # assemble owned compiled segments in output
+
+    global output_source
+
+    for seg in fn.compiled_segments:
+        output_source = ''.join((output_source, seg))
+
+    return fn
 
 def parse_fn(src: list, src_file: str, define_line_index: int, args: argparse.Namespace) -> FnPrototypeAst:
     tem_args, tem_end = parse_template_args(src, src_file, define_line_index, src[define_line_index], args)
@@ -445,6 +469,8 @@ def parse_fn(src: list, src_file: str, define_line_index: int, args: argparse.Na
     
     if ' ' in fn_name:
         raise CompileError("syntax error - fn name cannot contain spaces", src_file, define_line_index, src)
+    elif fn_name in builtit_reserved:
+        raise CompileError(f"syntax error - \"{fn_name}\" is a reserved keyword by karel-lang", src_file, define_line_index, src)
     
     # find end of fn
     
@@ -577,7 +603,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='NumKa language transpiler to karel-lang.', prog='numka')
 
     parser.add_argument('-W', choices=['none', 'all', 'err'], default='all', help='warning level')
-    parser.add_argument('-o', metavar='output_file', help='output karel-lang file. all source files will be compiled into this file')
+    parser.add_argument('-o', default='out.kl', metavar='output_file', help='output karel-lang file. all source files will be compiled into this file')
     parser.add_argument('-I', metavar='import_dirs', action='append', help='add a directory to import search paths')
     parser.add_argument('-v', default=False, action='store_true', help='enable verbose mode, will print internal asts')
 
@@ -602,6 +628,10 @@ if __name__ == '__main__':
         if verbose_mode:
             print(defined_fn_prototypes, '\n')
             print(instaciated_fns, '\n')
+
+        o = open(args.o, 'w')
+        o.write(output_source)
+        o.close()
 
     except CompileError as e:
         if verbose_mode:
