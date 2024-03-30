@@ -31,8 +31,7 @@ error_escape = f"{bold_escape}\x1b[31m"
 warning_escape = f"{bold_escape}\x1b[33m"
 reset_escape = "\x1b[0m"
 
-warning_is_error = False
-verbose_mode = False
+warning_level = 1
 log_source_view_size = 2
 
 class CompileError(Exception):
@@ -60,8 +59,10 @@ def error_print(src_file: str, error_message: str, line_index: int, src: list):
     print()
 
 def warn_print(src_file: str, warning_message: str, line_index: int, src: list):
-    if warning_is_error:
+    if warning_level == 2:
         raise CompileError(warning_message, src_file, line_index, src)
+    elif warning_level == 0:
+        return
 
     print(f"{warning_escape}warning{reset_escape}: {warning_message} at \"{src_file}\":{line_index + 1}")
     
@@ -84,7 +85,7 @@ class FnPrototypeAst:
     name: str
     line_of_definition: int
     ending_line_of_definition: int
-    template_args: list
+    template_args: tuple
     
     # if matches top-level requrements (no templates, no commit) it will get compiled into output even when never used
     top_level_implicit_usage: bool
@@ -115,14 +116,14 @@ class FnInstanceAst:
     compiled_segments: list[str] = dataclasses.field(default_factory=list[str])
 
     commit_fn_proto: FnPrototypeAst | None = None
-    instance_template_args: list
+    instance_template_args: tuple
 
 @dataclasses.dataclass(kw_only=True)
 class CallLocationAst:
     caller_fn_name: str
     callee_fn_name: str
 
-    template_args: list[str]
+    template_args: tuple
     callee_commit_dest_fn: FnPrototypeAst | None
 
     src: list[str]
@@ -131,7 +132,7 @@ class CallLocationAst:
 
 # == compiler ==
 
-def parse_template_args(src: list, src_file: str, src_line: int, call_exp: str, args: argparse.Namespace) -> tuple[list, int]:
+def parse_template_args(src: list, src_file: str, src_line: int, call_exp: str, args: argparse.Namespace) -> tuple[tuple, int]:
     # find template args clousure begining
     i = 0
 
@@ -148,7 +149,7 @@ def parse_template_args(src: list, src_file: str, src_line: int, call_exp: str, 
 
     if i == len(call_exp):
         # no templates args used
-        return ([], 0)
+        return (tuple(), 0)
     
     # find template args clousure end
     j = i + 1
@@ -169,7 +170,7 @@ def parse_template_args(src: list, src_file: str, src_line: int, call_exp: str, 
 
     if len(template_args) == 1 and template_args[0] == '':
         # alternate syntax for no template args
-        return ([], j)
+        return (tuple(), j)
 
     for i, arg in enumerate(template_args):
         arg = arg.strip()
@@ -177,7 +178,7 @@ def parse_template_args(src: list, src_file: str, src_line: int, call_exp: str, 
         if arg == '':
             raise CompileError(f"syntax error - missing template argument at position {i + 1}", src_file, src_line, src)
 
-    return (template_args, j)
+    return (tuple(template_args), j)
 
 def parse_contition(src: list, src_file: str, src_line: int, cond_exp: str, args: argparse.Namespace) -> tuple[str, int]:
     size_read = 0
@@ -216,10 +217,13 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
     # create fn instance ast
 
-    comp_name = fn_proto.name.upper()
+    if not args.g:
+        comp_name = fn_proto.name.upper() + f"<cl-{call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'}-th{hash(call_loc.template_args)}>"
+    else:
+        comp_name = fn_proto.name.upper() + f"<commit-loc: {call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'} | template-args: {call_loc.template_args}>"
 
     # return FnInstanceAst if already compiled an instance with the same template set and commit fn
-    if comp_name in instaciated_fns and instaciated_fns[comp_name].instance_template_args == call_loc.template_args and instaciated_fns[comp_name].commit_fn_proto == call_loc.callee_commit_dest_fn:
+    if comp_name in instaciated_fns:
         return instaciated_fns[comp_name]
 
     fn = FnInstanceAst(name=fn_proto.name, comp_name=comp_name, commit_fn_proto=call_loc.callee_commit_dest_fn, instance_template_args=call_loc.template_args)
@@ -309,7 +313,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 if not acc.strip() == '':
                     raise CompileError("syntax error - expected a \'{\' after a for statement", src_file, line_index, fn_proto.src)
 
-                if count > args.max_for_count:
+                if count > args.max_loop_count:
                     warn_print(src_file, f"for loop count {count} is greater than the safe maximum of {args.max_for_count}", line_index, fn_proto.src)
 
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"REPEAT {count}-TIMES\n"))
@@ -332,7 +336,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
             block_clousure_depth -= 1
             if block_clousure_depth == 0:
-                fn.compiled_segments.append(current_comp_segment)
+                fn.compiled_segments.append(current_comp_segment + '\n')
 
                 break
 
@@ -576,7 +580,7 @@ def compile_source_file(src_file: str, args: argparse.Namespace) -> None:
                 call_loc = CallLocationAst(
                     caller_fn_name="(top-level)",
                     callee_fn_name=fn.name,
-                    template_args=[],
+                    template_args=tuple(),
                     callee_commit_dest_fn=None,
                     src=src,
                     src_file=src_file,
@@ -606,17 +610,18 @@ if __name__ == '__main__':
     parser.add_argument('-o', default='out.kl', metavar='output_file', help='output karel-lang file. all source files will be compiled into this file')
     parser.add_argument('-I', metavar='import_dirs', action='append', help='add a directory to import search paths')
     parser.add_argument('-v', default=False, action='store_true', help='enable verbose mode, will print internal asts')
+    parser.add_argument('-g', default=False, action='store_true', help='enable debug mode, generate human-readable fn names for debugging')
 
-    parser.add_argument('-lmax-for-loop-count', dest='max_for_count', default=65535, type=int, help='max safe amount of iterations for a single for loop')
+    parser.add_argument('-lmax-for-loop-count', dest='max_loop_count', default=65535, type=int, help='max safe amount of iterations for a single for loop')
 
     parser.add_argument('source_files', nargs='*', default=[], help='source files to compile')
 
     args = parser.parse_args()
 
     if args.W == 'err':
-        warning_is_error = True
-    
-    verbose_mode = args.v
+        warning_level = 2
+    elif args.W == 'none':
+        warning_level = 0
 
     try:
         for src_file in args.source_files:
@@ -625,7 +630,7 @@ if __name__ == '__main__':
 
             compile_source_file(src_file, args)
         
-        if verbose_mode:
+        if args.v:
             print(defined_fn_prototypes, '\n')
             print(instaciated_fns, '\n')
 
@@ -634,7 +639,7 @@ if __name__ == '__main__':
         o.close()
 
     except CompileError as e:
-        if verbose_mode:
+        if args.v:
             print(defined_fn_prototypes, '\n')
             print(instaciated_fns, '\n')
 
