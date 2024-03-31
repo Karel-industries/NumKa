@@ -48,7 +48,7 @@ This `fn` and its body will be compiled into an equivalent karel-lang function w
 > [!note]
 > If you can't see your functions in your compiled output file, see Implicit Usage and check if your functions meet the requirements.
 
-After you define a `fn` in your source, a `fn` can be called using their name and with *or* without brackets `()` (brackets are later used for Templates)
+After you define a `fn` in your source, a `fn` can be called using their name with *or* without brackets `()` (brackets are later used for Templates)
 
 ```
 fn triple_step {
@@ -172,10 +172,10 @@ fn step_for(count) {
 fn my_func {
 	// step 6 times, turn left and then step 2 more times
 	
-	step_for(6)
+	step_for(6);
 	
 	left;
-	step_for(2)
+	step_for(2);
 }
 ```
 
