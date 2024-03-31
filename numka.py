@@ -151,17 +151,20 @@ def parse_template_args(src: list, src_file: str, src_line: int, call_exp: str, 
         c = call_exp[j]
 
         if c == '(':
-            raise CompileError("syntax error - unexpected \'(\' after expression", src_file, src_line, src)
+            raise CompileError("syntax error - unexpected \'(\' after template expression", src_file, src_line, src)
 
         if c == ')':
             break
 
         j += 1
     
+    if j == len(call_exp):
+        raise CompileError("unexpected end of file - template args expression never closed", src_file, src_line, src)
+
     # parse template args
     template_args = call_exp[i + 1:j].split(',')
 
-    if len(template_args) == 1 and template_args[0] == '':
+    if len(template_args) == 1 and template_args[0].strip() == '':
         # alternate syntax for no template args
         return (tuple(), j)
 
@@ -192,6 +195,8 @@ def parse_contition(src: list, src_file: str, src_line: int, cond_exp: str, args
         return (invert_prefix + "WALL", 5 + size_read)
     elif cond_exp.startswith("flag "):
         return (invert_prefix + "FLAG", 5 + size_read)
+    elif cond_exp.startswith("home "):
+        return (invert_prefix + "HOME", 5 + size_read)
     elif cond_exp.startswith("north "):
         return (invert_prefix + "NORTH", 6 + size_read)
     elif cond_exp.startswith("south "):
@@ -292,7 +297,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
     if not args.g:
         comp_name = fn_proto.name + f"<cl-{call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'}-th{hash(call_loc.template_args + call_loc.inherited_template_args)}>"
     else:
-        comp_name = fn_proto.name + f"<commit-loc: {call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'} | template-args: {call_loc.template_args}{f' + inherited: {call_loc.inherited_template_args}' if len(call_loc.inherited_template_args) > 0 else ''} >"
+        comp_name = fn_proto.name + f"<commit-loc: {call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'} | template-args: {call_loc.template_args}{f' + inherited: {call_loc.inherited_template_args}' if len(call_loc.inherited_template_args) > 0 else ''}>"
 
     # return FnInstanceAst if already compiled an instance with the same template set and commit fn
     if comp_name in instaciated_fns:
@@ -331,14 +336,16 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
         if c == '\n':
             line_index += 1
-            i += 1
 
             if not len(acc) == 0 and not acc[-1] == ' ':
                 acc += ' '
             
+            i += 1
             continue
-        elif c.split() == '' and not len(acc) == 0 and not acc[-1] == ' ':
-            acc += ' '
+        elif c.strip() == '':
+            if not len(acc) == 0 and not acc[-1] == ' ':
+                acc += ' '
+            
             i += 1
             continue
         elif c == '{':
@@ -359,6 +366,16 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     raise CompileError("syntax error - expected a \'{\' after an if statement", src_file, line_index, fn_proto.src)
 
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"IF {cond[0]}\n"))
+                current_comp_segment_depth += 1
+
+            elif acc.startswith("else"): # note: no suffixed space because else keyword doesn't have a condition
+                acc = acc[4:]
+
+                if not acc.strip() == '':
+                    raise CompileError("syntax error - expected a \'{\' after an else statement", src_file, line_index, fn_proto.src)
+
+                # remove last newline and append ', ELSE' to start the else block
+                current_comp_segment = ''.join((current_comp_segment[:-1], ", ELSE\n"))
                 current_comp_segment_depth += 1
 
             elif acc.startswith("while "):
@@ -422,6 +439,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                             break
                     
                     i += 1
+                i += 1
 
                 # parse out the template instanciation args
 
@@ -436,11 +454,18 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
                         if not len(l_acc) == 0 and not l_acc[-1] == ' ':
                             l_acc += ' '
-                    elif c == ' ' and not len(l_acc) == 0 and not l_acc[-1] == ' ':
-                        l_acc += ' '
+                    elif c.strip() == '':
+                        if not len(l_acc) == 0 and not l_acc[-1] == ' ':
+                            l_acc += ' '
                     elif c == ';':
+                        if '(' in l_acc and not ')' in l_acc:
+                            raise CompileError("syntax error - unexpected \';\' inside a template args closure", src_file, line_index, fn_proto.src)
+
                         break
                     else:
+                        if not '(' in l_acc and not c == '(':
+                            raise CompileError("syntax error - expected a \';\' after a lambda definition", src_file, line_index, fn_proto.src)
+
                         l_acc += c
                     
                     i += 1
@@ -505,6 +530,9 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             elif acc in builtin_fns:
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_fns[acc]}\n"))
             elif acc.startswith("recall"):
+                if '(' in acc and not ')' in acc:
+                    raise CompileError("syntax error - unexpected \';\' inside a template args closure", src_file, line_index, fn_proto.src)
+
                 tem_args, size_read = parse_template_args(fn_proto.src, fn_proto.src_file, line_index, acc, args)
                 
                 if size_read == 0:
@@ -533,6 +561,9 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, recall_fn_instance.comp_name, '\n'))
             elif acc.startswith("commit"):
                 if call_loc.callee_commit_dest_fn is not None:
+                    if '(' in acc and not ')' in acc:
+                        raise CompileError("syntax error - unexpected \';\' inside a template args closure", src_file, line_index, fn_proto.src)
+
                     tem_args, size_read = parse_template_args(fn_proto.src, fn_proto.src_file, line_index, acc, args)
                     
                     if size_read == 0:
@@ -568,6 +599,9 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             elif acc.startswith("if") or acc.startswith("while") or acc.startswith("for"):
                 raise CompileError(f"syntax error - if, while, and for statements do not support bracket-less forms", src_file, line_index, fn_proto.src)
             else:
+                if '(' in acc and not ')' in acc:
+                    raise CompileError("syntax error - unexpected \';\' inside a template args closure", src_file, line_index, fn_proto.src)
+
                 tem_args, size_read = parse_template_args(fn_proto.src, fn_proto.src_file, line_index, acc, args)
 
                 if size_read == 0:
@@ -669,7 +703,7 @@ def compile_source_file(src_file: str, args: argparse.Namespace) -> None:
             i += fn.ending_line_of_definition - fn.line_of_definition
 
         else:
-            raise CompileError("syntax error", src_file, i, src)
+            raise CompileError("syntax error - expression outside of a fn", src_file, i, src)
 
         i += 1
     
