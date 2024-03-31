@@ -6,7 +6,7 @@ import os
 
 # == compiler globals ==
 
-loaded_source_files = set()
+source_file_compiled = {}
 
 output_source = ""
 defined_fn_prototypes = {}
@@ -43,8 +43,20 @@ class CompileError(Exception):
         self.src = src
         self.line_index = line_index
 
+last_status = ""
+
+def status_print(file: str):
+    global last_status
+    last_status = file
+
+    print(f"\x1b[1K\r{bold_escape}Compiling:{reset_escape} {file}", end="")
+
+def reset_status():
+    print()
+    status_print(last_status)
+
 def error_print(src_file: str, error_message: str, line_index: int, src: list):
-    print(f"{error_escape}error{reset_escape}: {error_message} at \"{src_file}\":{line_index + 1}")
+    print(f"\n\n{error_escape}error{reset_escape}: {error_message} at \"{src_file}\":{line_index + 1}")
     
     max_digits = len(str(line_index + log_source_view_size + 1))
 
@@ -64,7 +76,7 @@ def warn_print(src_file: str, warning_message: str, line_index: int, src: list):
     elif warning_level == 0:
         return
 
-    print(f"{warning_escape}warning{reset_escape}: {warning_message} at \"{src_file}\":{line_index + 1}")
+    print(f"\n\n{warning_escape}warning{reset_escape}: {warning_message} at \"{src_file}\":{line_index + 1}")
     
     max_digits = len(str(line_index + log_source_view_size))
 
@@ -75,8 +87,8 @@ def warn_print(src_file: str, warning_message: str, line_index: int, src: list):
             continue
         
         print(f"{bold_escape + warning_escape if i == 0 else ''}  {j + 1:0={max_digits}}:  {src[j]}{reset_escape}")
-
-    print()
+    
+    reset_status()
 
 # == source asts ==
 
@@ -312,6 +324,9 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
     current_comp_segment_depth = 1
     block_clousure_depth = 1
 
+    # used for validating else statements
+    is_last_end_if = {}
+
     current_comp_segment = ''.join((current_comp_segment, fn.comp_name, '\n'))
 
     # instantiate template args
@@ -359,35 +374,42 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             elif acc.startswith("if "):
                 acc = acc[3:]
 
-                cond = parse_contition(fn_proto.src, src_file, line_index, acc, args)
+                cond = parse_contition(fn_proto.src, fn_proto.src_file, line_index, acc, args)
                 acc = acc[cond[1]:]
 
                 if not acc.strip() == '':
-                    raise CompileError("syntax error - expected a \'{\' after an if statement", src_file, line_index, fn_proto.src)
+                    raise CompileError("syntax error - expected a \'{\' after an if statement", fn_proto.src_file, line_index, fn_proto.src)
 
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"IF {cond[0]}\n"))
+                is_last_end_if[current_comp_segment_depth] = True
                 current_comp_segment_depth += 1
 
             elif acc.startswith("else"): # note: no suffixed space because else keyword doesn't have a condition
                 acc = acc[4:]
 
+                # check that the last output line is an end of an if block
+                if not current_comp_segment_depth in is_last_end_if or not is_last_end_if[current_comp_segment_depth] or (not len(current_comp_segment) > 4 or not current_comp_segment[-4:] == "END\n"):
+                    raise CompileError("syntax error - else statements can be only defined after an if", fn_proto.src_file, line_index, fn_proto.src)
+
                 if not acc.strip() == '':
-                    raise CompileError("syntax error - expected a \'{\' after an else statement", src_file, line_index, fn_proto.src)
+                    raise CompileError("syntax error - expected a \'{\' after an else statement", fn_proto.src_file, line_index, fn_proto.src)
 
                 # remove last newline and append ', ELSE' to start the else block
                 current_comp_segment = ''.join((current_comp_segment[:-1], ", ELSE\n"))
+                is_last_end_if[current_comp_segment_depth] = False
                 current_comp_segment_depth += 1
 
             elif acc.startswith("while "):
                 acc = acc[6:]
 
-                cond = parse_contition(fn_proto.src, src_file, line_index, acc, args)
+                cond = parse_contition(fn_proto.src, fn_proto.src_file, line_index, acc, args)
                 acc = acc[cond[1]:]
 
                 if not acc.strip() == '':
-                    raise CompileError("syntax error - expected a \'{\' after a while statement", src_file, line_index, fn_proto.src)
+                    raise CompileError("syntax error - expected a \'{\' after a while statement", fn_proto.src_file, line_index, fn_proto.src)
 
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"UNTIL {cond[0]}\n"))
+                is_last_end_if[current_comp_segment_depth] = False
                 current_comp_segment_depth += 1
 
             elif acc.startswith("for "):
@@ -397,19 +419,20 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     count = int(acc, base=0)
                     acc = acc[len(str(count)):]
                 except ValueError:
-                    raise CompileError("for loop count is not convertible to an integer", src_file, line_index, fn_proto.src)
+                    raise CompileError("for loop count is not convertible to an integer", fn_proto.src_file, line_index, fn_proto.src)
 
                 if not acc.strip() == '':
-                    raise CompileError("syntax error - expected a \'{\' after a for statement", src_file, line_index, fn_proto.src)
+                    raise CompileError("syntax error - expected a \'{\' after a for statement", fn_proto.src_file, line_index, fn_proto.src)
 
                 if count > args.max_loop_count:
-                    warn_print(src_file, f"for loop count {count} is greater than the safe maximum of {args.max_for_count}", line_index, fn_proto.src)
+                    warn_print(fn_proto.src_file, f"for loop count {count} is greater than the safe maximum of {args.max_loop_count}", line_index, fn_proto.src)
 
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"REPEAT {count}-TIMES\n"))
+                is_last_end_if[current_comp_segment_depth] = False
                 current_comp_segment_depth += 1
 
             elif acc.startswith("fn "):
-                raise CompileError("syntax error - fn definitions are not allowed inside fn bodies (did you forget a \'}\'?)", src_file, line_index, fn_proto.src)
+                raise CompileError("syntax error - fn definitions are not allowed inside fn bodies (did you forget a \'}\'?)", fn_proto.src_file, line_index, fn_proto.src)
             else:
                 # parse lambda for this fn instance
 
@@ -418,7 +441,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 if fn_name in defined_fn_prototypes:
                     lambda_proto =  defined_fn_prototypes[fn_name] 
                 else:
-                    lambda_proto = parse_fn(fn_proto.src, src_file, line_index, fn, args)
+                    lambda_proto = parse_fn(fn_proto.src, fn_proto.src_file, line_index, fn, args)
 
                 # offset to lambdas end
 
@@ -459,19 +482,19 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                             l_acc += ' '
                     elif c == ';':
                         if '(' in l_acc and not ')' in l_acc:
-                            raise CompileError("syntax error - unexpected \';\' inside a template args closure", src_file, line_index, fn_proto.src)
+                            raise CompileError("syntax error - unexpected \';\' inside a template args closure", fn_proto.src_file, line_index, fn_proto.src)
 
                         break
                     else:
                         if not '(' in l_acc and not c == '(':
-                            raise CompileError("syntax error - expected a \';\' after a lambda definition", src_file, line_index, fn_proto.src)
+                            raise CompileError("syntax error - expected a \';\' after a lambda definition", fn_proto.src_file, line_index, fn_proto.src)
 
                         l_acc += c
                     
                     i += 1
 
                 # compile lambda fn instance
-                tem_args, read_size = parse_template_args(fn_proto.src, src_file, line_index, l_acc, args)
+                tem_args, read_size = parse_template_args(fn_proto.src, fn_proto.src_file, line_index, l_acc, args)
 
                 if not read_size == 0:
                     l_acc = l_acc[read_size + 1:]
@@ -481,7 +504,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 l_acc = l_acc.strip()
 
                 if not l_acc == '':
-                    raise CompileError("syntax error - expected a \';\' after a lambda definition", src_file, line_index, fn_proto.src)
+                    raise CompileError("syntax error - expected a \';\' after a lambda definition", fn_proto.src_file, line_index, fn_proto.src)
 
                 lambda_call_loc = CallLocationAst(
                     caller_fn_name=fn_proto.name,
@@ -506,6 +529,9 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             acc = ""
         
         elif c == '}':
+            if not acc.strip() == '':
+                raise CompileError("syntax error - unexpected expression before '}' (did you forget a ';'?)", fn_proto.src_file, line_index, fn_proto.src)
+
             # end block
             acc = ""
 
@@ -531,7 +557,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_fns[acc]}\n"))
             elif acc.startswith("recall"):
                 if '(' in acc and not ')' in acc:
-                    raise CompileError("syntax error - unexpected \';\' inside a template args closure", src_file, line_index, fn_proto.src)
+                    raise CompileError("syntax error - unexpected \';\' inside a template args closure", fn_proto.src_file, line_index, fn_proto.src)
 
                 tem_args, size_read = parse_template_args(fn_proto.src, fn_proto.src_file, line_index, acc, args)
                 
@@ -543,7 +569,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 acc = acc.strip()
 
                 if not acc == '':
-                        raise CompileError(f"syntax error - expected a ';' after a recall keyword", src_file, line_index, fn_proto.src)
+                        raise CompileError(f"syntax error - expected a ';' after a recall keyword", fn_proto.src_file, line_index, fn_proto.src)
 
                 # recompile fn with possibly new template args
                 recall_loc = CallLocationAst(
@@ -552,7 +578,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     template_args=tem_args,
                     callee_commit_dest_fn=None,
                     src=fn_proto.src,
-                    src_file=src_file,
+                    src_file=fn_proto.src_file,
                     caller_line_index=line_index
                 )
 
@@ -562,7 +588,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             elif acc.startswith("commit"):
                 if call_loc.callee_commit_dest_fn is not None:
                     if '(' in acc and not ')' in acc:
-                        raise CompileError("syntax error - unexpected \';\' inside a template args closure", src_file, line_index, fn_proto.src)
+                        raise CompileError("syntax error - unexpected \';\' inside a template args closure", fn_proto.src_file, line_index, fn_proto.src)
 
                     tem_args, size_read = parse_template_args(fn_proto.src, fn_proto.src_file, line_index, acc, args)
                     
@@ -574,7 +600,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     acc = acc.strip()
 
                     if not acc == '':
-                        raise CompileError(f"syntax error - expected a ';' after a commit keyword", src_file, line_index, fn_proto.src)
+                        raise CompileError(f"syntax error - expected a ';' after a commit keyword", fn_proto.src_file, line_index, fn_proto.src)
 
                     # compile target commit location
                     commit_loc = CallLocationAst(
@@ -583,7 +609,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                         template_args=tem_args,
                         callee_commit_dest_fn=None, # commit already done
                         src=fn_proto.src,
-                        src_file=src_file,
+                        src_file=fn_proto.src_file,
                         caller_line_index=line_index
                     )
 
@@ -591,27 +617,27 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
                     current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, commit_dest_fn.comp_name, '\n'))
                 else:
-                    warn_print(src_file, f"commit keyword used while not pushing to stack, called from fn \"{call_loc.caller_fn_name}\"", line_index, fn_proto.src)
+                    warn_print(fn_proto.src_file, f"commit keyword used while not pushing to stack, called from fn \"{call_loc.caller_fn_name}\"", line_index, fn_proto.src)
 
             elif '=' in acc:
                 # TODO: slice assigment
                 pass
             elif acc.startswith("if") or acc.startswith("while") or acc.startswith("for"):
-                raise CompileError(f"syntax error - if, while, and for statements do not support bracket-less forms", src_file, line_index, fn_proto.src)
+                raise CompileError(f"syntax error - if, while, and for statements do not support bracket-less forms", fn_proto.src_file, line_index, fn_proto.src)
             else:
                 if '(' in acc and not ')' in acc:
-                    raise CompileError("syntax error - unexpected \';\' inside a template args closure", src_file, line_index, fn_proto.src)
+                    raise CompileError("syntax error - unexpected \';\' inside a template args closure", fn_proto.src_file, line_index, fn_proto.src)
 
                 tem_args, size_read = parse_template_args(fn_proto.src, fn_proto.src_file, line_index, acc, args)
 
                 if size_read == 0:
                     if len(acc.split(' ', 1)) == 2:
-                        raise CompileError(f"syntax error - expected a \';\' after a fn call", src_file, line_index, fn_proto.src)
+                        raise CompileError(f"syntax error - expected a \';\' after a fn call", fn_proto.src_file, line_index, fn_proto.src)
                     
                     acc = acc.split(' ', 1)[0]
                 else:
                     if not acc[size_read + 1:].strip() == '':
-                        raise CompileError(f"syntax error - expected a \';\' after a fn call", src_file, line_index, fn_proto.src)
+                        raise CompileError(f"syntax error - expected a \';\' after a fn call", fn_proto.src_file, line_index, fn_proto.src)
 
                     acc = acc.split('(', 1)[0].strip()
 
@@ -619,7 +645,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 callee_fn = defined_fn_prototypes.get(acc)
 
                 if callee_fn is None:
-                    raise CompileError(f"call to an undefined fn \"{acc}\"", src_file, line_index, fn_proto.src)
+                    raise CompileError(f"call to an undefined fn \"{acc}\"", fn_proto.src_file, line_index, fn_proto.src)
 
                 fn_call_loc = CallLocationAst(
                     caller_fn_name=fn_proto.name,
@@ -627,7 +653,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     template_args=tem_args,
                     callee_commit_dest_fn=None,
                     src=fn_proto.src,
-                    src_file=src_file,
+                    src_file=fn_proto.src_file,
                     caller_line_index=line_index
                 )
 
@@ -642,7 +668,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
         i += 1
     
     if i == len(fn_src):
-        raise CompileError(f"unexpected end of file, fn \"{fn.name}\" never closed (did you forget a \'{'}'}\'?)", src_file, i - 1, fn_proto.src)
+        raise CompileError(f"unexpected end of file, fn \"{fn.name}\" never closed (did you forget a \'{'}'}\'?)", fn_proto.src_file, i - 1, fn_proto.src)
 
     # assemble owned compiled segments in output
 
@@ -654,7 +680,9 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
     return fn
 
 def compile_source_file(src_file: str, args: argparse.Namespace) -> None:
-    loaded_source_files.add(os.path.realpath(src_file))
+    source_file_compiled[os.path.realpath(src_file)] = False
+
+    status_print(src_file)
 
     # parse top-level source asts
     f = open(src_file, 'r')
@@ -676,11 +704,12 @@ def compile_source_file(src_file: str, args: argparse.Namespace) -> None:
 
             import_file = l.strip()
 
-            if os.path.realpath(import_file) in loaded_source_files:
-                raise CompileError(f"cyclical import of source file \"{import_file}\"", src_file, i, src)
+            if not os.path.realpath(import_file) in source_file_compiled:
+                # compile a new source file into output and asts
+                compile_source_file(import_file, args)
 
-            # compile a new source file into output and asts
-            compile_source_file(import_file, args)
+            elif not source_file_compiled[os.path.realpath(import_file)]:
+                raise CompileError(f"cyclical import of source file \"{import_file}\"", src_file, i, src)
 
         elif l.startswith("fn "):
             l = l[3:].lstrip()
@@ -708,8 +737,7 @@ def compile_source_file(src_file: str, args: argparse.Namespace) -> None:
         i += 1
     
     f.close()
-
-    # assemble output source from asts
+    source_file_compiled[os.path.realpath(src_file)] = True
 
 
 # == argument parser ==
@@ -736,7 +764,7 @@ if __name__ == '__main__':
 
     try:
         for src_file in args.source_files:
-            if src_file in loaded_source_files:
+            if src_file in source_file_compiled:
                 continue
 
             compile_source_file(src_file, args)
@@ -749,12 +777,15 @@ if __name__ == '__main__':
         o.write(output_source)
         o.close()
 
+        print(f"\x1b[1K\rCompiled {bold_escape}{len(source_file_compiled)}{reset_escape} source files into {bold_escape}{args.o}{reset_escape} successfully!")
+
     except CompileError as e:
         if args.v:
             print(defined_fn_prototypes, '\n')
             print(instaciated_fns, '\n')
 
         error_print(e.src_file, e.message, e.line_index, e.src)
+        print(f"Compilation {error_escape}failed{reset_escape} in source file {bold_escape}{e.src_file}{reset_escape}!")
         exit(-1)
     except FileNotFoundError as e:
         print(f"{error_escape}error{reset_escape}: source file \"{e.filename}\" not found")
