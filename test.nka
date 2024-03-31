@@ -42,7 +42,9 @@ fn help {
         clear; step_for(15);
     }
 
-    recall;
+    if is_wall {
+        recall;
+    }
 
     --;
 }

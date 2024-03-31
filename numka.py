@@ -394,8 +394,8 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 if not acc.strip() == '':
                     raise CompileError("syntax error - expected a \'{\' after an else statement", fn_proto.src_file, line_index, fn_proto.src)
 
-                # remove last newline and append ', ELSE' to start the else block
-                current_comp_segment = ''.join((current_comp_segment[:-1], ", ELSE\n"))
+                # remove last 'END\n' and reopen the (empty) else block
+                current_comp_segment = current_comp_segment[:-4 - len('   ' * current_comp_segment_depth)]
                 is_last_end_if[current_comp_segment_depth] = False
                 current_comp_segment_depth += 1
 
@@ -536,7 +536,11 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             acc = ""
 
             current_comp_segment_depth -= 1
-            current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"END\n"))
+            
+            if not current_comp_segment_depth in is_last_end_if or not is_last_end_if[current_comp_segment_depth]:
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, "END\n"))
+            else:
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, "END, ELSE\n", '   ' * current_comp_segment_depth, "END\n"))
 
             block_clousure_depth -= 1
             if block_clousure_depth == 0:
@@ -583,6 +587,9 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 )
 
                 recall_fn_instance = compile_fn(fn_proto, recall_loc, args)
+
+                if current_comp_segment_depth == 1:
+                    warn_print(fn_proto.src_file, f"recall most likely causes an infinite loop", line_index, fn_proto.src)
 
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, recall_fn_instance.comp_name, '\n'))
             elif acc.startswith("commit"):
