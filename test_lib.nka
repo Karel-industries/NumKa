@@ -1,0 +1,27 @@
+fn clear {
+    while is_flag {
+        --;
+    }
+}
+
+fn step_for(val) {
+    for [val] {
+        step;
+    }
+}
+
+fn fill {
+    clear;
+    
+    for 8 {
+        ++;
+    }
+}
+
+fn set_value(val) {
+    clear;
+
+    for [val] {
+        ++;
+    }
+}

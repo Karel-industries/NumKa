@@ -788,5 +788,5 @@ if __name__ == '__main__':
         print(f"Compilation {error_escape}failed{reset_escape} in source file {bold_escape}{e.src_file}{reset_escape}!")
         exit(-1)
     except FileNotFoundError as e:
-        print(f"{error_escape}error{reset_escape}: source file \"{e.filename}\" not found")
+        print(f"\n\n{error_escape}error{reset_escape}: source file \"{e.filename}\" not found")
         exit(-1)
