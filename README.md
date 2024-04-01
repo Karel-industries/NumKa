@@ -11,12 +11,12 @@ git clone https://github.com/Karel-industries/NumKa.git numka
 cd numka
 ```
 
-The `numka.py` compiler follows the gcc compiler flags where applicable so to compile source file `src.nka` to `out.kl` run
+The `numka.py` compiler follows gcc compiler flags where applicable so to compile source file `src.nka` to `out.kl` run
 ```sh
 ./numka.py -o out.kl src.nka
 ```
 
-For more options or features see the run `./numka.py -h`.
+For more options or features run `./numka.py -h`.
 
 # Language Docs
 
@@ -31,7 +31,7 @@ To import a source file `std.nka` simply pass in a import statement
 import std.nka
 ```
 
-The NumKa compiler will then search for that file in the current working directory and its include paths (defined using `-I` see `./numka.py -h` for more help)  and (if it didn't before) compile it to the output file. All definitions in the imported file will be implicitly available.
+The NumKa compiler will then search for that file in the current working directory and its include paths (defined using `-I` see `./numka.py -h` for more help)  and (if it didn't before) compile it to the output file. All definitions in the imported file will be implicitly available after the `import` statement.
 
 ### Basic Functions
 
@@ -43,12 +43,12 @@ fn my_func {
 }
 ```
 
-This `fn` and its body will be compiled into an equivalent karel-lang function with a name resembling `MY_FUNC<CL-NONE-TH[hash value]>` which will be visible in your catalogue.
+This `fn` and its body will be compiled into an equivalent karel-lang function with a name resembling `MY_FUNC` which will be visible in your catalogue.
 
 > [!note]
-> If you can't see your functions in your compiled output file, see Implicit Usage and check if your functions meet the requirements.
+> If you can't see your functions in your compiled output file, see [Implicit Usage](#implicit-usage) and check if your functions meet the requirements.
 
-After you define a `fn` in your source, a `fn` can be called using their name with *or* without brackets `()` (brackets are later used for Templates)
+After you define a `fn` in your source, a `fn` can be called using their name with *or* without brackets `()` (brackets are later used for [Templates](#template-support))
 
 ```
 fn triple_step {
@@ -64,6 +64,19 @@ fn my_func {
 	triple_step();
 }
 ```
+
+#### Implicit Usage
+
+NumKa supports multiple features (eg. [Templates](#template-support)) which makes compiling `fns` immediately on definition impossible. There for the `numka.py` compiler only compiles functions that are used somewhere else in the code base. However because NumKa doesn't have a concept of a `main` function, all functions would get ignored. 
+
+To amend this NumKa defines a set of rules that if a `fn` followes these rules it considired *implicitly used* and will be compiled no matter if it is used by a different `fn` or not.
+
+Currently for a `fn` to be considered as *implicitly used* the following must be met:
+- no *template args* are used for the `fn` (but child [lambdas](#lambda-support) may include *templates args*)
+- the `fn` doesn't include a `commit` keyword
+
+> [!note]
+> If a `fn` is marked as *implicitly used* its final name must be the original (upper-case) name of the `fn`. (eg. `MY_FUNC`) Otherwise if a `fn` is not marked as *implicitly used* and is only compiled to be used by other `fns` the final name is not specified and can differ from the `fn` name. (eg. `MY_FUNC<CL-NONE-...`)
 
 ### NumKa Keywords
 
@@ -121,7 +134,7 @@ fn my_func {
 
 #### `recall` keyword
 
-The `recall` keyword is a shorthand for doing a recursive call to the currently running `fn` or lambda. Again can be called with or without brackets.
+The `recall` keyword is a shorthand for doing a recursive call to the currently running `fn` or [lambda](#lambda-support). Again can be called with or without brackets.
 
 ```
 // calls recursivelly until the current square is empty (of flags) 
@@ -192,7 +205,7 @@ fn my_func {
 
 ## Lambda support
 
-Lambdas in NumKa are special unnamed functions defined inside of `fn` bodies. They are most of the time used as a code-segment which can `recall` itself, have its own *template args*, but also shares (inherits) parents `fn` *template args*. (and semi-share stack slices and `commit` behaviour, see Stack Semantics) 
+Lambdas in NumKa are special unnamed functions defined inside of `fn` bodies. They are most of the time used as a code-segment which can `recall` itself, have its own *template args*, but also shares (inherits) parents `fn` *template args*. (and semi-share stack slices and `commit` behaviour, see [Stack Semantics](#stack-semantics)) 
 
 Lambdas are defined inside of `fn` bodies and are called *in-place*.
 

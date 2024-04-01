@@ -120,6 +120,7 @@ class FnInstanceAst:
 
     commit_fn_proto: FnPrototypeAst | None = None
     instance_template_args: tuple
+    inherited_template_arg_values: tuple = dataclasses.field(default_factory=tuple)
     inherited_template_args: tuple = dataclasses.field(default_factory=tuple)
 
 @dataclasses.dataclass(kw_only=True)
@@ -127,8 +128,11 @@ class CallLocationAst:
     caller_fn_name: str
     callee_fn_name: str
 
-    template_args: tuple
+    template_arg_values: tuple
+    inherited_template_arg_values: tuple = dataclasses.field(default_factory=tuple)
+
     inherited_template_args: tuple = dataclasses.field(default_factory=tuple)
+
     callee_commit_dest_fn: FnPrototypeAst | None
 
     src: list[str]
@@ -294,28 +298,39 @@ def parse_fn(src: list, src_file: str, define_line_index: int, lambda_owner: FnI
     elif "commit(" in inline_fn_src or "commit " in inline_fn_src or "commit;" in inline_fn_src:
         implicit_usage = False
 
+    # lambdas can contain inherited template args which we cannot check here
+    # lambdas are always used "explicitly" anyway
+    elif not lambda_owner == None:
+        implicit_usage = False
+
     fn = FnPrototypeAst(name=fn_name, fn_src=inline_fn_src, src=src, src_file=src_file, ending_line_of_definition=end_line, line_of_definition=define_line_index, template_args=tem_args, top_level_implicit_usage=implicit_usage)
     defined_fn_prototypes[fn_name] = fn
 
     return fn
 
 # returns a precompiled FnInstanceAst if it has already been compiled with the same template args and commit fn 
-def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argparse.Namespace, inherited_template_args: tuple = tuple()) -> FnInstanceAst:
+def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argparse.Namespace) -> FnInstanceAst:
     i = 0
     line_index = fn_proto.line_of_definition
 
     # create fn instance ast
 
     if not args.g:
-        comp_name = fn_proto.name + f"<cl-{call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'}-th{hash(call_loc.template_args + call_loc.inherited_template_args)}>"
+        comp_name = fn_proto.name + f"<cl-{call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'}-th{hash(call_loc.template_arg_values + call_loc.inherited_template_arg_values)}>"
     else:
-        comp_name = fn_proto.name + f"<commit-loc: {call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'} | template-args: {call_loc.template_args}{f' + inherited: {call_loc.inherited_template_args}' if len(call_loc.inherited_template_args) > 0 else ''}>"
+        comp_name = fn_proto.name + f"<commit-loc: {call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'} | template-args: {call_loc.template_arg_values}{f' + inherited: {call_loc.inherited_template_arg_values}' if len(call_loc.inherited_template_arg_values) > 0 else ''}>"
+
+    if fn_proto.top_level_implicit_usage:
+        # fns with implicit usage are by definition the only fn with that name
+        # no extra strings are required to avoid name collisions
+
+        comp_name = fn_proto.name
 
     # return FnInstanceAst if already compiled an instance with the same template set and commit fn
     if comp_name in instaciated_fns:
         return instaciated_fns[comp_name]
 
-    fn = FnInstanceAst(name=fn_proto.name, comp_name=comp_name, commit_fn_proto=call_loc.callee_commit_dest_fn, instance_template_args=call_loc.template_args, inherited_template_args=call_loc.template_args + call_loc.inherited_template_args)
+    fn = FnInstanceAst(name=fn_proto.name, comp_name=comp_name, commit_fn_proto=call_loc.callee_commit_dest_fn, instance_template_args=call_loc.template_arg_values, inherited_template_arg_values=call_loc.template_arg_values + call_loc.inherited_template_arg_values, inherited_template_args=fn_proto.template_args + call_loc.inherited_template_args)
     instaciated_fns[comp_name] = fn
 
     # define function in output source
@@ -331,12 +346,15 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
     # instantiate template args
 
-    if not len(fn_proto.template_args) == len(call_loc.template_args):
-        raise CompileError(f"incorrect number of template args for fn \"{fn_proto.name}\", expected {len(fn_proto.template_args)}, got {len(call_loc.template_args)}", call_loc.src_file, call_loc.caller_line_index, call_loc.src)
+    if not len(fn_proto.template_args) == len(call_loc.template_arg_values):
+        raise CompileError(f"incorrect number of template args for fn \"{fn_proto.name}\", expected {len(fn_proto.template_args)}, got {len(call_loc.template_arg_values)}", call_loc.src_file, call_loc.caller_line_index, call_loc.src)
+
+    to_replace = fn_proto.template_args + call_loc.inherited_template_args
+    to_insert = call_loc.template_arg_values + call_loc.inherited_template_arg_values
 
     fn_src = fn_proto.fn_src
-    for i, arg in enumerate(fn_proto.template_args):
-        fn_src = fn_src.replace('[' + arg + ']', call_loc.template_args[i])
+    for i, arg in enumerate(to_replace):
+        fn_src = fn_src.replace('[' + arg + ']', to_insert[i])
 
     # parse and compile fn segments
 
@@ -363,6 +381,23 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             
             i += 1
             continue
+        elif c == '[':
+            warn_print(fn_proto.src_file, f"possible unresolved template target in fn \"{fn_proto.name}\" called by fn \"{call_loc.caller_fn_name}\" (did you forget to define it in template args?)", line_index, fn_proto.src)
+
+            start_line_index = line_index
+            while i < len(fn_src):
+                c = fn_src[i]
+
+                if c == '\n':
+                    line_index += 1
+                elif c == ']':
+                    break
+
+                i += 1
+
+            if not c == ']':
+                raise CompileError("syntax error - unresolved template target never closed, expected \']\'", fn_proto.src_file, start_line_index, fn_proto.src)
+
         elif c == '{':
             # parse block
 
@@ -419,7 +454,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     count = int(acc, base=0)
                     acc = acc[len(str(count)):]
                 except ValueError:
-                    raise CompileError("for loop count is not convertible to an integer", fn_proto.src_file, line_index, fn_proto.src)
+                    raise CompileError(f"for loop count \"{acc.strip()}\" is not convertible to an integer", fn_proto.src_file, line_index, fn_proto.src)
 
                 if not acc.strip() == '':
                     raise CompileError("syntax error - expected a \'{\' after a for statement", fn_proto.src_file, line_index, fn_proto.src)
@@ -509,7 +544,8 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 lambda_call_loc = CallLocationAst(
                     caller_fn_name=fn_proto.name,
                     callee_fn_name=lambda_proto.name,
-                    template_args=tem_args,
+                    template_arg_values=tem_args,
+                    inherited_template_arg_values=fn.inherited_template_arg_values,
                     inherited_template_args=fn.inherited_template_args,
                     callee_commit_dest_fn=call_loc.callee_commit_dest_fn, # lambdas can commit parents pushes
                     src=fn_proto.src,
@@ -518,7 +554,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 )
 
                 # note: includes callers templates in the template hash, as parents template args can affect a child lambda
-                lambda_fn_instance = compile_fn(lambda_proto, lambda_call_loc, args, fn.inherited_template_args)
+                lambda_fn_instance = compile_fn(lambda_proto, lambda_call_loc, args)
 
                 # call lambda
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{lambda_fn_instance.comp_name}\n"))
@@ -579,7 +615,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 recall_loc = CallLocationAst(
                     caller_fn_name=fn_proto.name, 
                     callee_fn_name=fn_proto.name,
-                    template_args=tem_args,
+                    template_arg_values=tem_args,
                     callee_commit_dest_fn=None,
                     src=fn_proto.src,
                     src_file=fn_proto.src_file,
@@ -613,7 +649,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     commit_loc = CallLocationAst(
                         caller_fn_name=fn_proto.name, 
                         callee_fn_name=call_loc.callee_commit_dest_fn.name,
-                        template_args=tem_args,
+                        template_arg_values=tem_args,
                         callee_commit_dest_fn=None, # commit already done
                         src=fn_proto.src,
                         src_file=fn_proto.src_file,
@@ -657,7 +693,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 fn_call_loc = CallLocationAst(
                     caller_fn_name=fn_proto.name,
                     callee_fn_name=acc,
-                    template_args=tem_args,
+                    template_arg_values=tem_args,
                     callee_commit_dest_fn=None,
                     src=fn_proto.src,
                     src_file=fn_proto.src_file,
@@ -727,7 +763,7 @@ def compile_source_file(src_file: str, args: argparse.Namespace) -> None:
                 call_loc = CallLocationAst(
                     caller_fn_name="(top-level)",
                     callee_fn_name=fn.name,
-                    template_args=tuple(),
+                    template_arg_values=tuple(),
                     callee_commit_dest_fn=None,
                     src=src,
                     src_file=src_file,

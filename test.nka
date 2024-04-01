@@ -33,7 +33,10 @@ fn help {
             }();
 
             (lv){
+                set_value([v]);
                 set_value([lv]);
+
+                set_value([v][lv]); // concatinating two template args
             }(5);
         };
     } (1);
