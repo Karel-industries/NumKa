@@ -6,6 +6,8 @@ import os
 
 # == compiler globals ==
 
+version = "v0.1.0"
+
 source_file_compiled = {}
 
 output_source = ""
@@ -318,7 +320,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
     if not args.g:
         comp_name = fn_proto.name + f"<cl-{call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'}-th{hash(call_loc.template_arg_values + call_loc.inherited_template_arg_values)}>"
     else:
-        comp_name = fn_proto.name + f"<commit-loc: {call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'} | template-args: {call_loc.template_arg_values}{f' + inherited: {call_loc.inherited_template_arg_values}' if len(call_loc.inherited_template_arg_values) > 0 else ''}>"
+        comp_name = fn_proto.name + f"<commit-loc:{call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'}|template-args:{call_loc.template_arg_values}{f'+inherited:{call_loc.inherited_template_arg_values}' if len(call_loc.inherited_template_arg_values) > 0 else ''}>"
 
     if fn_proto.top_level_implicit_usage:
         # fns with implicit usage are by definition the only fn with that name
@@ -788,17 +790,27 @@ def compile_source_file(src_file: str, args: argparse.Namespace) -> None:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='NumKa language transpiler to karel-lang.', prog='numka')
 
-    parser.add_argument('-W', choices=['none', 'all', 'err'], default='all', help='warning level')
-    parser.add_argument('-o', default='out.kl', metavar='output_file', help='output karel-lang file. all source files will be compiled into this file')
-    parser.add_argument('-I', metavar='import_dirs', action='append', help='add a directory to import search paths')
-    parser.add_argument('-v', default=False, action='store_true', help='enable verbose mode, will print internal asts')
-    parser.add_argument('-g', default=False, action='store_true', help='enable debug mode, generate human-readable fn names for debugging')
+    parser.add_argument('-v', '--version', default=False, action='store_true', help='print compiler version and exit')
 
-    parser.add_argument('-lmax-for-loop-count', dest='max_loop_count', default=65535, type=int, help='max safe amount of iterations for a single for loop')
+    comp_group = parser.add_argument_group('compiler options')
+
+    comp_group.add_argument('-W', choices=['none', 'all', 'err'], default='all', help='warning level')
+    comp_group.add_argument('-o', default='out.kl', metavar='output_file', help='output karel-lang file. all source files will be compiled into this file')
+    comp_group.add_argument('-I', metavar='import_dirs', action='append', help='add a directory to import search paths')
+    comp_group.add_argument('-vv', default=False, action='store_true', help='enable verbose mode, will print internal asts')
+    comp_group.add_argument('-g', default=False, action='store_true', help='enable debug mode, generate human-readable fn names for debugging')
+
+    lang_group = parser.add_argument_group('language options')
+
+    lang_group.add_argument('-lmax-for-loop-count', dest='max_loop_count', default=65535, type=int, help='max safe amount of iterations for a single for loop')
 
     parser.add_argument('source_files', nargs='*', default=[], help='source files to compile')
 
     args = parser.parse_args()
+
+    if args.version:
+        print(f"NumKa transpiler {version}")
+        exit(0)
 
     if args.W == 'err':
         warning_level = 2
@@ -812,7 +824,7 @@ if __name__ == '__main__':
 
             compile_source_file(src_file, args)
         
-        if args.v:
+        if args.vv:
             print(defined_fn_prototypes, '\n')
             print(instaciated_fns, '\n')
 
