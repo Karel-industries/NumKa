@@ -6,7 +6,7 @@ import os
 
 # == compiler globals ==
 
-version = "v0.1.0"
+version = "v0.1.1"
 
 source_file_compiled = {}
 
@@ -14,17 +14,78 @@ output_source = ""
 defined_fn_prototypes = {}
 instaciated_fns = {}
 
-builtin_fns = {
-    "step": "STEP",
-    "left": "LEFT",
-    "pick": "PICK",
-    "place": "PLACE",
-    "stop": "STOP",
+builtin_dialects = {
+    "PyKarel/Kvm": [
+        {
+            "step": "STEP",
+            "left": "LEFT",
+            "pick": "PICK",
+            "place": "PLACE",
+            "stop": "STOP",
+        },
+        {
+            "end",
+            "until",
+            "repeat"
+        },
+        { # codegen only keywords
+            "end": "END",
+            "if": "IF",
+            "is": "IS",
+            "not": "ISNOT",
+            "else": "END, ELSE",
+            "while": "UNTIL",
+            "for": "REPEAT",
+            "for-suffix": "-TIMES",
+
+            "wall": "WALL",
+            "flag": "FLAG",
+            "home": "HOME",
+            "north": "NORTH",
+            "south": "SOUTH",
+            "east": "EAST",
+            "west": "WEST",
+        }
+    ],
+
+    "VisK99": [
+        { # dialect exposed keywords
+            "step": "KROK",
+            "left": "VLEVO-VBOK",
+            "pick": "ZVEDNI",
+            "place": "POLOŽ",
+            "stop": "STOP",
+        },
+        { # reserved keywords
+            "konec",
+            "dokud",
+            "opakuj",
+        },
+        { # codegen only keywords
+            "end": "KONEC",
+            "if": "KDYŽ",
+            "is": "JE",
+            "not": "NENÍ",
+            "else": "KONEC, JINAK",
+            "while": "DOKUD",
+            "for": "OPAKUJ",
+            "for-suffix": "-KRÁT",
+
+            "wall": "ZEĎ",
+            "flag": "ZNAČKA",
+            "home": "DOMOV",
+            "north": "SEVER",
+            "south": "JIH",
+            "east": "VÝCHOD",
+            "west": "ZÁPAD",
+        }
+    ],
 }
 
-builtit_reserved = {
-    "end", "until", "repeat"
-}
+# note: filled by the correct dialect on init
+builtin_fns = {}
+builtit_reserved = set()
+builtin_cg_keywords = {}
 
 # == compiler utils ==
 
@@ -201,28 +262,28 @@ def parse_contition(src: list, src_file: str, src_line: int, cond_exp: str, args
     if cond_exp.startswith("is_"):
         cond_exp = cond_exp[3:]
         size_read += 3
-        invert_prefix = "IS "
+        invert_prefix = f"{builtin_cg_keywords['is']} "
     elif cond_exp.startswith("not_"):
         cond_exp = cond_exp[4:]
         size_read += 4
-        invert_prefix = "ISNOT "
+        invert_prefix = f"{builtin_cg_keywords['not']} "
     else:
         raise CompileError("syntax error - condition must start with 'is_' or 'not_'", src_file, src_line, src)
 
     if cond_exp.startswith("wall "):
-        return (invert_prefix + "WALL", 5 + size_read)
+        return (invert_prefix + f"{builtin_cg_keywords['wall']}", 5 + size_read)
     elif cond_exp.startswith("flag "):
-        return (invert_prefix + "FLAG", 5 + size_read)
+        return (invert_prefix + f"{builtin_cg_keywords['flag']}", 5 + size_read)
     elif cond_exp.startswith("home "):
-        return (invert_prefix + "HOME", 5 + size_read)
+        return (invert_prefix + f"{builtin_cg_keywords['home']}", 5 + size_read)
     elif cond_exp.startswith("north "):
-        return (invert_prefix + "NORTH", 6 + size_read)
+        return (invert_prefix + f"{builtin_cg_keywords['north']}", 6 + size_read)
     elif cond_exp.startswith("south "):
-        return (invert_prefix + "SOUTH", 6 + size_read)
+        return (invert_prefix + f"{builtin_cg_keywords['south']}", 6 + size_read)
     elif cond_exp.startswith("east "):
-        return (invert_prefix + "EAST", 5 + size_read)
+        return (invert_prefix + f"{builtin_cg_keywords['east']}", 5 + size_read)
     elif cond_exp.startswith("west "):
-        return (invert_prefix + "WEST", 5 + size_read)
+        return (invert_prefix + f"{builtin_cg_keywords['west']}", 5 + size_read)
     else:
         raise CompileError(f"syntax error - unknown condition \"{orig_cond_exp.strip()}\"", src_file, src_line, src)
 
@@ -417,7 +478,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 if not acc.strip() == '':
                     raise CompileError("syntax error - expected a \'{\' after an if statement", fn_proto.src_file, line_index, fn_proto.src)
 
-                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"IF {cond[0]}\n"))
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_cg_keywords['if']} {cond[0]}\n"))
                 is_last_end_if[current_comp_segment_depth] = True
                 current_comp_segment_depth += 1
 
@@ -425,14 +486,14 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 acc = acc[4:]
 
                 # check that the last output line is an end of an if block
-                if not current_comp_segment_depth in is_last_end_if or not is_last_end_if[current_comp_segment_depth] or (not len(current_comp_segment) > 4 or not current_comp_segment[-4:] == "END\n"):
+                if not current_comp_segment_depth in is_last_end_if or not is_last_end_if[current_comp_segment_depth] or (not len(current_comp_segment) > len(builtin_cg_keywords['end']) + 1 or not current_comp_segment[-(len(builtin_cg_keywords['end']) + 1):] == f"{builtin_cg_keywords['end']}\n"):
                     raise CompileError("syntax error - else statements can be only defined after an if", fn_proto.src_file, line_index, fn_proto.src)
 
                 if not acc.strip() == '':
                     raise CompileError("syntax error - expected a \'{\' after an else statement", fn_proto.src_file, line_index, fn_proto.src)
 
                 # remove last 'END\n' and reopen the (empty) else block
-                current_comp_segment = current_comp_segment[:-4 - len('   ' * current_comp_segment_depth)]
+                current_comp_segment = current_comp_segment[:-(len(builtin_cg_keywords['end']) + 1) - len('   ' * current_comp_segment_depth)]
                 is_last_end_if[current_comp_segment_depth] = False
                 current_comp_segment_depth += 1
 
@@ -445,7 +506,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 if not acc.strip() == '':
                     raise CompileError("syntax error - expected a \'{\' after a while statement", fn_proto.src_file, line_index, fn_proto.src)
 
-                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"UNTIL {cond[0]}\n"))
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_cg_keywords['while']} {cond[0]}\n"))
                 is_last_end_if[current_comp_segment_depth] = False
                 current_comp_segment_depth += 1
 
@@ -464,7 +525,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 if count > args.max_loop_count:
                     warn_print(fn_proto.src_file, f"for loop count {count} is greater than the safe maximum of {args.max_loop_count}", line_index, fn_proto.src)
 
-                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"REPEAT {count}-TIMES\n"))
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_cg_keywords['for']} {count}{builtin_cg_keywords['for-suffix']}\n"))
                 is_last_end_if[current_comp_segment_depth] = False
                 current_comp_segment_depth += 1
 
@@ -576,9 +637,9 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             current_comp_segment_depth -= 1
             
             if not current_comp_segment_depth in is_last_end_if or not is_last_end_if[current_comp_segment_depth]:
-                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, "END\n"))
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_cg_keywords['end']}\n"))
             else:
-                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, "END, ELSE\n", '   ' * current_comp_segment_depth, "END\n"))
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_cg_keywords['else']}\n", '   ' * current_comp_segment_depth, f"{builtin_cg_keywords['end']}\n"))
 
             block_clousure_depth -= 1
             if block_clousure_depth == 0:
@@ -592,9 +653,9 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             acc = acc.strip()
 
             if acc == "++":
-                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"PLACE\n"))
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_fns['place']}\n"))
             elif acc == "--":
-                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"PICK\n"))
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_fns['pick']}\n"))
             elif acc in builtin_fns:
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_fns[acc]}\n"))
             elif acc.startswith("recall"):
@@ -803,10 +864,13 @@ if __name__ == '__main__':
     lang_group = parser.add_argument_group('language options')
 
     lang_group.add_argument('-lmax-for-loop-count', dest='max_loop_count', default=65535, type=int, help='max safe amount of iterations for a single for loop')
+    lang_group.add_argument('-lkarel-lang-dialect', default='PyKarel/Kvm', choices=['VisK99', 'PyKarel/Kvm'], help='enable karel-lang dialect')
 
     parser.add_argument('source_files', nargs='*', default=[], help='source files to compile')
 
     args = parser.parse_args()
+
+    # compiler init
 
     if args.version:
         print(f"NumKa transpiler {version}")
@@ -816,6 +880,12 @@ if __name__ == '__main__':
         warning_level = 2
     elif args.W == 'none':
         warning_level = 0
+
+    builtin_fns = builtin_dialects[args.lkarel_lang_dialect][0]
+    builtit_reserved = builtin_dialects[args.lkarel_lang_dialect][1]
+    builtin_cg_keywords = builtin_dialects[args.lkarel_lang_dialect][2]
+
+    # start compilation
 
     try:
         for src_file in args.source_files:
