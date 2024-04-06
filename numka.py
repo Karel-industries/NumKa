@@ -382,9 +382,9 @@ def parse_fn(src: list, src_file: str, define_line_index: int, lambda_owner: FnI
 
 def gen_comp_name(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, seg_index: int) -> str:
     if not args.g:
-        return fn_proto.name + ('' if seg_index == 0 else f"_seg{seg_index}") + f"<ch:{hash(call_loc.callee_commit_dest_fn.comp_name) if not call_loc.callee_commit_dest_fn is None else 'none'}-th:{hash(call_loc.template_arg_values + call_loc.inherited_template_arg_values) if len(call_loc.template_arg_values) + len(call_loc.inherited_template_arg_values) else 'none'}>"
+        return fn_proto.name + ('' if seg_index == 0 else f"_seg{seg_index}") + f"<ch{hash(call_loc.callee_commit_dest_fn.comp_name) if not call_loc.callee_commit_dest_fn is None else '-none'}-th{hash(call_loc.template_arg_values + call_loc.inherited_template_arg_values) if len(call_loc.template_arg_values) + len(call_loc.inherited_template_arg_values) else '-none'}>"
     else:
-        return fn_proto.name + ('' if seg_index == 0 else f"_seg{seg_index}") + f"<commit-loc:{call_loc.callee_commit_dest_fn.comp_name if not call_loc.callee_commit_dest_fn is None else 'none'}|template-args:{call_loc.template_arg_values}{f'+inherited:{call_loc.inherited_template_arg_values}' if len(call_loc.inherited_template_arg_values) > 0 else ''}>"
+        return fn_proto.name + ('' if seg_index == 0 else f"_seg{seg_index}") + f"<commit-loc={call_loc.callee_commit_dest_fn.comp_name if not call_loc.callee_commit_dest_fn is None else 'none'}|template-args={call_loc.template_arg_values}{f'+inherited={call_loc.inherited_template_arg_values}' if len(call_loc.inherited_template_arg_values) > 0 else ''}>"
 
 # returns a precompiled FnInstanceAst if it has already been compiled with the same template args and commit fn 
 def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argparse.Namespace) -> FnInstanceAst:
