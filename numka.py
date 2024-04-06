@@ -299,8 +299,8 @@ def parse_fn(src: list, src_file: str, define_line_index: int, lambda_owner: FnI
 
         if ' ' in fn_name:
             raise CompileError("syntax error - fn name cannot contain spaces", src_file, define_line_index, src)
-        elif fn_name in builtit_reserved:
-            raise CompileError(f"syntax error - \"{fn_name}\" is a reserved keyword by karel-lang", src_file, define_line_index, src)
+        elif fn_name in builtit_reserved or fn_name.upper() in builtin_fns.values() or fn_name.upper() in builtin_cg_keywords.values():
+            raise CompileError(f"\"{fn_name}\" is a reserved keyword by karel-lang", src_file, define_line_index, src)
     else:
         fn_name = f"{lambda_owner.name}_lambda_n{len(lambda_owner.owning_lambdas)}"
 
@@ -837,6 +837,9 @@ def compile_source_file(src_file: str, args: argparse.Namespace) -> None:
 
             if not found:
                 raise CompileError(f"source file to be imported \"{import_file}\" not found", src_file, i, src)
+
+            # reset status after import
+            status_print(src_file)
 
         elif l.startswith("fn "):
             l = l[3:].lstrip()
