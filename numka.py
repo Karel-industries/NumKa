@@ -6,7 +6,7 @@ import os
 
 # == compiler globals ==
 
-version = "v0.1.2"
+version = "v0.2.0"
 
 source_file_compiled = {}
 import_paths = []
@@ -157,6 +157,11 @@ def warn_print(src_file: str, warning_message: str, line_index: int, src: list):
 # == source asts ==
 
 @dataclasses.dataclass(kw_only=True)
+class CallableAst:
+    name: str
+    comp_name: str
+
+@dataclasses.dataclass(kw_only=True)
 class FnPrototypeAst:
     name: str
     line_of_definition: int
@@ -182,7 +187,7 @@ class FnInstanceAst:
 
     compiled_segments: list[str] = dataclasses.field(default_factory=list[str])
 
-    commit_fn_proto: FnPrototypeAst | None = None
+    commit_fn: CallableAst | None = None
     instance_template_args: tuple
     inherited_template_arg_values: tuple = dataclasses.field(default_factory=tuple)
     inherited_template_args: tuple = dataclasses.field(default_factory=tuple)
@@ -197,7 +202,7 @@ class CallLocationAst:
 
     inherited_template_args: tuple = dataclasses.field(default_factory=tuple)
 
-    callee_commit_dest_fn: FnPrototypeAst | None
+    callee_commit_dest_fn: CallableAst | None
 
     src: list[str]
     src_file: str
@@ -375,6 +380,12 @@ def parse_fn(src: list, src_file: str, define_line_index: int, lambda_owner: FnI
 
     return fn
 
+def gen_comp_name(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, seg_index: int) -> str:
+    if not args.g:
+        return fn_proto.name + ('' if seg_index == 0 else f"_seg{seg_index}") + f"<ch:{hash(call_loc.callee_commit_dest_fn.comp_name) if not call_loc.callee_commit_dest_fn is None else 'none'}-th:{hash(call_loc.template_arg_values + call_loc.inherited_template_arg_values) if len(call_loc.template_arg_values) + len(call_loc.inherited_template_arg_values) else 'none'}>"
+    else:
+        return fn_proto.name + ('' if seg_index == 0 else f"_seg{seg_index}") + f"<commit-loc:{call_loc.callee_commit_dest_fn.comp_name if not call_loc.callee_commit_dest_fn is None else 'none'}|template-args:{call_loc.template_arg_values}{f'+inherited:{call_loc.inherited_template_arg_values}' if len(call_loc.inherited_template_arg_values) > 0 else ''}>"
+
 # returns a precompiled FnInstanceAst if it has already been compiled with the same template args and commit fn 
 def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argparse.Namespace) -> FnInstanceAst:
     i = 0
@@ -382,10 +393,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
     # create fn instance ast
 
-    if not args.g:
-        comp_name = fn_proto.name + f"<cl-{call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'}-th{hash(call_loc.template_arg_values + call_loc.inherited_template_arg_values)}>"
-    else:
-        comp_name = fn_proto.name + f"<commit-loc:{call_loc.callee_commit_dest_fn.name if not call_loc.callee_commit_dest_fn is None else 'none'}|template-args:{call_loc.template_arg_values}{f'+inherited:{call_loc.inherited_template_arg_values}' if len(call_loc.inherited_template_arg_values) > 0 else ''}>"
+    comp_name = gen_comp_name(fn_proto, call_loc, 0)
 
     if fn_proto.top_level_implicit_usage:
         # fns with implicit usage are by definition the only fn with that name
@@ -397,14 +405,24 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
     if comp_name in instaciated_fns:
         return instaciated_fns[comp_name]
 
-    fn = FnInstanceAst(name=fn_proto.name, comp_name=comp_name, commit_fn_proto=call_loc.callee_commit_dest_fn, instance_template_args=call_loc.template_arg_values, inherited_template_arg_values=call_loc.template_arg_values + call_loc.inherited_template_arg_values, inherited_template_args=fn_proto.template_args + call_loc.inherited_template_args)
+    fn = FnInstanceAst(name=fn_proto.name, comp_name=comp_name, commit_fn=call_loc.callee_commit_dest_fn, instance_template_args=call_loc.template_arg_values, inherited_template_arg_values=call_loc.template_arg_values + call_loc.inherited_template_arg_values, inherited_template_args=fn_proto.template_args + call_loc.inherited_template_args)
     instaciated_fns[comp_name] = fn
 
     # define function in output source
 
     current_comp_segment = ""
     current_comp_segment_depth = 1
+
+    current_comp_segment_index = 0
+    next_comp_segment_index = 0
+
+    comp_segment_stack = []
+
     block_clousure_depth = 1
+
+    # slice order tracking
+    slice_stack_scopes = []
+    poped_stack_slices = []
 
     # used for validating else statements
     is_last_end_if = {}
@@ -424,6 +442,8 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
         fn_src = fn_src.replace('[' + arg + ']', to_insert[i])
 
     # parse and compile fn segments
+
+    # FIXME: commit validation
 
     while fn_src[i] != '{':
         i += 1
@@ -449,7 +469,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
             i += 1
             continue
         elif c == '[':
-            warn_print(fn_proto.src_file, f"possible unresolved template target in fn \"{fn_proto.name}\" called by fn \"{call_loc.caller_fn_name}\" (did you forget to define it in template args?)", line_index, fn_proto.src)
+            warn_print(fn_proto.src_file, f"unresolved template target in fn \"{fn_proto.name}\" called by fn \"{call_loc.caller_fn_name}\" (did you forget to define it in template args?)", line_index, fn_proto.src)
 
             start_line_index = line_index
             while i < len(fn_src):
@@ -647,7 +667,15 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
             block_clousure_depth -= 1
             if block_clousure_depth == 0:
-                fn.compiled_segments.append(current_comp_segment + '\n')
+                # ending fn instance
+
+                if not len(slice_stack_scopes) == 0:
+                    raise CompileError(f"stack slice(s) {slice_stack_scopes} were not poped before ending scope! No tracked slices must exist at the end of a scope", fn_proto.src_file, line_index, fn_proto.src) 
+
+                if len(fn.compiled_segments) > current_comp_segment_index:
+                    fn.compiled_segments[current_comp_segment_index] = ''.join((current_comp_segment, '\n'))
+                else:
+                    fn.compiled_segments.append(''.join((current_comp_segment, '\n')))
 
                 break
 
@@ -685,7 +713,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     caller_fn_name=fn_proto.name, 
                     callee_fn_name=fn_proto.name,
                     template_arg_values=call_loc.template_arg_values if len(tem_args) == 0 else tem_args,
-                    callee_commit_dest_fn=None,
+                    callee_commit_dest_fn=call_loc.callee_commit_dest_fn,
                     src=fn_proto.src,
                     src_file=fn_proto.src_file,
                     caller_line_index=line_index
@@ -698,7 +726,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, recall_fn_instance.comp_name, '\n'))
             elif acc.startswith("commit"):
-                if call_loc.callee_commit_dest_fn is not None:
+                if not call_loc.callee_commit_dest_fn is None:
                     if '(' in acc and not ')' in acc:
                         raise CompileError("syntax error - unexpected \';\' inside a template args closure", fn_proto.src_file, line_index, fn_proto.src)
 
@@ -714,26 +742,134 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     if not acc == '':
                         raise CompileError(f"syntax error - expected a ';' after a commit keyword", fn_proto.src_file, line_index, fn_proto.src)
 
-                    # compile target commit location
-                    commit_loc = CallLocationAst(
+                    # commit by calling target fn
+
+                    current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, call_loc.callee_commit_dest_fn.comp_name, '\n'))
+                else:
+                    warn_print(fn_proto.src_file, f"commit keyword used while not pushing a stack slice, called from fn \"{call_loc.caller_fn_name}\"", line_index, fn_proto.src)
+
+            elif '=' in acc:
+                exp = acc.split('=', 1)
+
+                slice_name = exp[0].strip()
+
+                if ' ' in slice_name:
+                    raise CompileError("syntax error - stack slice names cannot contain spaces", fn_proto.src_file, line_index, fn_proto.src)
+
+                acc = exp[1].strip()
+
+                if acc.startswith('push '):
+                    acc = acc[5:]
+
+                    if '(' in acc and not ')' in acc:
+                        raise CompileError("syntax error - unexpected \';\' inside a template args closure", fn_proto.src_file, line_index, fn_proto.src)
+
+                    tem_args, size_read = parse_template_args(fn_proto.src, fn_proto.src_file, line_index, acc, args)
+
+                    if size_read == 0:
+                        if len(acc.split(' ', 1)) == 2:
+                            raise CompileError(f"syntax error - expected a \';\' after a push fn call", fn_proto.src_file, line_index, fn_proto.src)
+                        
+                        acc = acc.split(' ', 1)[0]
+                    else:
+                        if not acc[size_read + 1:].strip() == '':
+                            raise CompileError(f"syntax error - expected a \';\' after a push fn call", fn_proto.src_file, line_index, fn_proto.src)
+
+                        acc = acc.split('(', 1)[0].strip()
+
+                    if slice_name in slice_stack_scopes:
+                        raise CompileError(f"stack slice name \"{acc}\" already in use", fn_proto.src_file, line_index, fn_proto.src)
+
+                    if not current_comp_segment_depth == 1:
+                        raise CompileError(f"for now, stack slices can be only used on the root scope (outside of if, while, for, etc.)", fn_proto.src_file, line_index, fn_proto.src)
+
+                    # gen next segment comp_name and use it as commit dest fn
+                    comp_segment_stack.append(current_comp_segment_index)
+                    old_segment_index = current_comp_segment_index
+
+                    next_comp_segment_index += 1
+                    current_comp_segment_index = next_comp_segment_index
+
+                    comp_name = gen_comp_name(fn_proto, call_loc, current_comp_segment_index)
+
+                    commit_loc = CallableAst(
+                        name=fn_proto.name + f"[segment:{current_comp_segment_index}]",
+                        comp_name=comp_name
+                    )
+
+                    # push fn callee
+                    callee_fn = defined_fn_prototypes.get(acc)
+
+                    if callee_fn is None:
+                        raise CompileError(f"call to an undefined push fn \"{acc}\"", fn_proto.src_file, line_index, fn_proto.src)
+
+                    push_loc = CallLocationAst(
                         caller_fn_name=fn_proto.name, 
-                        callee_fn_name=call_loc.callee_commit_dest_fn.name,
+                        callee_fn_name=acc,
                         template_arg_values=tem_args,
-                        callee_commit_dest_fn=None, # commit already done
+                        callee_commit_dest_fn=commit_loc,
                         src=fn_proto.src,
                         src_file=fn_proto.src_file,
                         caller_line_index=line_index
                     )
 
-                    commit_dest_fn = compile_fn(call_loc.callee_commit_dest_fn, commit_loc, args)
+                    push_fn = compile_fn(callee_fn, push_loc, args)
 
-                    current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, commit_dest_fn.comp_name, '\n'))
+                    current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, push_fn.comp_name, '\n'))
+                    slice_stack_scopes.insert(0, slice_name)
+                    
+                    if slice_name in poped_stack_slices:
+                        poped_stack_slices.remove(slice_name)
+
+                    # split fn segments
+                    
+                    if len(fn.compiled_segments) > old_segment_index: # unfinished, will be continued after pop
+                        fn.compiled_segments[old_segment_index] = current_comp_segment
+                    else:
+                        fn.compiled_segments.append(current_comp_segment)
+                    
+                    current_comp_segment = ""
+                    current_comp_segment = ''.join((comp_name, '\n'))
+
+                    current_comp_segment_depth = 1
+
                 else:
-                    warn_print(fn_proto.src_file, f"commit keyword used while not pushing to stack, called from fn \"{call_loc.caller_fn_name}\"", line_index, fn_proto.src)
+                    raise CompileError("syntax error - stack slice assignment must use the \'push\' keyword", fn_proto.src_file, line_index, fn_proto.src)
 
-            elif '=' in acc:
-                # TODO: slice assigment
-                pass
+            elif acc.startswith('pop '):
+                acc = acc[4:].strip()
+
+                if ' ' in acc:
+                    raise CompileError("syntax error - expected \';\' after a pop", fn_proto.src_file, line_index, fn_proto.src)
+
+                if acc in poped_stack_slices:
+                    raise CompileError(f"stack slice \"{acc}\" already poped", fn_proto.src_file, line_index, fn_proto.src)
+
+                elif len(slice_stack_scopes) == 0 or not acc in slice_stack_scopes:
+                    raise CompileError(f"unknown stack slice \"{acc}\"", fn_proto.src_file, line_index, fn_proto.src)
+
+                elif not slice_stack_scopes[0] == acc:
+                    raise CompileError(f"only the last pushed stack slice (here it's slice \"{slice_stack_scopes[0]}\") can be poped", fn_proto.src_file, line_index, fn_proto.src)
+
+                if not current_comp_segment_depth == 1:
+                        raise CompileError(f"for now, stack slices can be only used on the root scope (outside of if, while, for, etc.)", fn_proto.src_file, line_index, fn_proto.src)
+
+                slice_stack_scopes.pop(0)
+                poped_stack_slices.append(acc)
+
+                # return to push parent fn segment
+
+                if len(fn.compiled_segments) > current_comp_segment_index:
+                    fn.compiled_segments[current_comp_segment_index] = ''.join((current_comp_segment, builtin_cg_keywords["end"], "\n\n"))
+                else:
+                    fn.compiled_segments.append(''.join((current_comp_segment, builtin_cg_keywords["end"], "\n\n")))
+
+                current_comp_segment_index = comp_segment_stack.pop()
+                comp_name = gen_comp_name(fn_proto, call_loc, current_comp_segment_index)
+
+                current_comp_segment = fn.compiled_segments[current_comp_segment_index]
+                current_comp_segment_depth = 1
+
             elif acc.startswith("if") or acc.startswith("while") or acc.startswith("for"):
                 raise CompileError(f"syntax error - if, while, and for statements do not support bracket-less forms", fn_proto.src_file, line_index, fn_proto.src)
             else:
@@ -771,7 +907,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
                 callee_fn_instance = compile_fn(callee_fn, fn_call_loc, args)
 
-                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{callee_fn_instance.comp_name}\n"))
+                current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, callee_fn_instance.comp_name, "\n"))
             
             acc = ""
         else:
@@ -786,6 +922,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
     global output_source
 
+    fn.compiled_segments.reverse()
     for seg in fn.compiled_segments:
         output_source = ''.join((output_source, seg.upper()))
 

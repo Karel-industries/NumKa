@@ -14,11 +14,18 @@ fn help {
 
     set_value(5);
 
+    v_w = push set_value(2); // NOTE: will fail in future when commit validation will be implemented! (set_value doesn't commit)
+
+    v_l = push returning_to_wall;
+
     (v) {
         clear;
         if is_flag {
             recall([v]);
         }
+
+        // different scope, can use same slice names
+        v_l = push returning_to_wall;
 
         // very bizzare lambda tests
         {
@@ -39,6 +46,8 @@ fn help {
                 set_value([v][lv]); // concatinating two template args
             }(5);
         };
+
+        pop v_l;
     } (1);
 
     for 65535 {
@@ -47,7 +56,24 @@ fn help {
 
     if is_wall {
         recall;
+    } else {
+        step;
     }
 
     --;
+
+    // slice tracker stress test
+
+    pop v_l;
+    v_l = push move_value;
+
+    left;
+
+    v_l2 = push returning_to_wall;
+    pop v_l2;
+    pop v_l;
+
+    pop v_w;
+
+    place;
 }

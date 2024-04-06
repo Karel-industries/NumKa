@@ -25,3 +25,27 @@ fn set_value(val) {
         ++;
     }
 }
+
+// square for storing value must be empty
+fn move_value {
+    if is_flag {
+        pick;
+        recall;
+        place;
+    } else {
+        commit;
+    }
+}
+
+fn returning_to_wall {
+    if not_wall {
+        step;
+        recall;
+        step;
+    } else {
+        commit;
+        
+        // turn around to return back
+        left; left;
+    }
+}
