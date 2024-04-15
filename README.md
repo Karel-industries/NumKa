@@ -193,7 +193,7 @@ fn my_func {
 ```
 
 > [!note]
-> Note that the `recall` keyword also counts as a `fn` call and so must include *template arg values* for the current `fn` (which *may or may not* be different from the current `fn` *template arg values*)
+> Note that the `recall` keyword also counts as a `fn` call and so can include *template arg values* for the current `fn`. In the case that a recall keyword in a fn template doesn't have *template arg values* the current *values* from the current fn are used implicitly
 > 
 > ```
 > fn my_func(v) {

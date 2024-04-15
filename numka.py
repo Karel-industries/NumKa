@@ -6,9 +6,10 @@ import os
 
 # == compiler globals ==
 
-version = "v0.1.1"
+version = "v0.1.2"
 
 source_file_compiled = {}
+import_paths = []
 
 output_source = ""
 defined_fn_prototypes = {}
@@ -242,6 +243,9 @@ def parse_template_args(src: list, src_file: str, src_line: int, call_exp: str, 
 
     # parse template args
     template_args = call_exp[i + 1:j].split(',')
+
+    for i in range(len(template_args)):
+        template_args[i] = template_args[i].strip()
 
     if len(template_args) == 1 and template_args[0].strip() == '':
         # alternate syntax for no template args
@@ -656,11 +660,13 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_fns['place']}\n"))
             elif acc == "--":
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_fns['pick']}\n"))
+            elif acc == "":
+                pass
             elif acc in builtin_fns:
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_fns[acc]}\n"))
             elif acc.startswith("recall"):
-                if '(' in acc and not ')' in acc:
-                    raise CompileError("syntax error - unexpected \';\' inside a template args closure", fn_proto.src_file, line_index, fn_proto.src)
+                # if '(' in acc and not ')' in acc:
+                #     raise CompileError("syntax error - unexpected \';\' inside a template args closure", fn_proto.src_file, line_index, fn_proto.src)
 
                 tem_args, size_read = parse_template_args(fn_proto.src, fn_proto.src_file, line_index, acc, args)
                 
@@ -678,7 +684,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 recall_loc = CallLocationAst(
                     caller_fn_name=fn_proto.name, 
                     callee_fn_name=fn_proto.name,
-                    template_arg_values=tem_args,
+                    template_arg_values=call_loc.template_arg_values if len(tem_args) == 0 else tem_args,
                     callee_commit_dest_fn=None,
                     src=fn_proto.src,
                     src_file=fn_proto.src_file,
@@ -788,6 +794,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 def compile_source_file(src_file: str, args: argparse.Namespace) -> None:
     source_file_compiled[os.path.realpath(src_file)] = False
 
+    src_file = os.path.normpath(src_file)
     status_print(src_file)
 
     # parse top-level source asts
@@ -809,13 +816,27 @@ def compile_source_file(src_file: str, args: argparse.Namespace) -> None:
             l = l[7:]
 
             import_file = l.strip()
+            found = False
 
-            if not os.path.realpath(import_file) in source_file_compiled:
-                # compile a new source file into output and asts
-                compile_source_file(import_file, args)
+            for path in import_paths:
+                path = path + "/" + import_file
 
-            elif not source_file_compiled[os.path.realpath(import_file)]:
-                raise CompileError(f"cyclical import of source file \"{import_file}\"", src_file, i, src)
+                if not os.path.exists(path):
+                    continue
+
+                if not os.path.realpath(path) in source_file_compiled:
+                    # compile a new source file into output and asts
+                    compile_source_file(path, args)
+                    found = True
+
+                elif source_file_compiled[os.path.realpath(path)]:
+                    found = True
+
+                else:
+                    raise CompileError(f"cyclical import of source file \"{import_file}\"", src_file, i, src)
+
+            if not found:
+                raise CompileError(f"source file to be imported \"{import_file}\" not found", src_file, i, src)
 
         elif l.startswith("fn "):
             l = l[3:].lstrip()
@@ -857,7 +878,7 @@ if __name__ == '__main__':
 
     comp_group.add_argument('-W', choices=['none', 'all', 'err'], default='all', help='warning level')
     comp_group.add_argument('-o', default='out.kl', metavar='output_file', help='output karel-lang file. all source files will be compiled into this file')
-    comp_group.add_argument('-I', metavar='import_dirs', action='append', help='add a directory to import search paths')
+    comp_group.add_argument('-I', default=[], metavar='import_dirs', action='append', help='add a directory to import search paths')
     comp_group.add_argument('-vv', default=False, action='store_true', help='enable verbose mode, will print internal asts')
     comp_group.add_argument('-g', default=False, action='store_true', help='enable debug mode, generate human-readable fn names for debugging')
 
@@ -885,6 +906,10 @@ if __name__ == '__main__':
     builtit_reserved = builtin_dialects[args.lkarel_lang_dialect][1]
     builtin_cg_keywords = builtin_dialects[args.lkarel_lang_dialect][2]
 
+    import_paths = ["."]
+    for path in args.I:
+        import_paths.append(path)
+
     # start compilation
 
     try:
@@ -905,13 +930,10 @@ if __name__ == '__main__':
         print(f"\x1b[1K\rCompiled {bold_escape}{len(source_file_compiled)}{reset_escape} source files into {bold_escape}{args.o}{reset_escape} successfully!")
 
     except CompileError as e:
-        if args.v:
+        if args.vv:
             print(defined_fn_prototypes, '\n')
             print(instaciated_fns, '\n')
 
         error_print(e.src_file, e.message, e.line_index, e.src)
         print(f"Compilation {error_escape}failed{reset_escape} in source file {bold_escape}{e.src_file}{reset_escape}!")
-        exit(-1)
-    except FileNotFoundError as e:
-        print(f"\n\n{error_escape}error{reset_escape}: source file \"{e.filename}\" not found")
         exit(-1)
