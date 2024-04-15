@@ -6,7 +6,7 @@ import os
 
 # == compiler globals ==
 
-version = "v0.2.0"
+version = "v0.2.1"
 
 source_file_compiled = {}
 import_paths = []
@@ -171,6 +171,7 @@ class FnPrototypeAst:
     
     # if matches top-level requrements (no templates, no commit) it will get compiled into output even when never used
     top_level_implicit_usage: bool
+    is_slice_valid: bool
 
     fn_src: str
 
@@ -299,8 +300,13 @@ def parse_contition(src: list, src_file: str, src_line: int, cond_exp: str, args
 def parse_fn(src: list, src_file: str, define_line_index: int, lambda_owner: FnInstanceAst | None, args: argparse.Namespace) -> FnPrototypeAst:
     tem_args, tem_end = parse_template_args(src, src_file, define_line_index, src[define_line_index], args)
     
+    is_slice = False
     if lambda_owner == None:
         fn_name = src[define_line_index].split('//', 1)[0].strip()[3:].lstrip().split('(', 1)[0].rstrip(" {")
+
+        if fn_name.endswith(" slicing"):
+            is_slice = True
+            fn_name = fn_name[:-6].strip()
 
         if ' ' in fn_name:
             raise CompileError("syntax error - fn name cannot contain spaces", src_file, define_line_index, src)
@@ -308,6 +314,7 @@ def parse_fn(src: list, src_file: str, define_line_index: int, lambda_owner: FnI
             raise CompileError(f"\"{fn_name}\" is a reserved keyword by karel-lang", src_file, define_line_index, src)
     else:
         fn_name = f"{lambda_owner.name}_lambda_n{len(lambda_owner.owning_lambdas)}"
+        is_slice = not lambda_owner.commit_fn == None # parent is commiting -> is a slice valid fn
 
     # find end of fn
     
@@ -325,7 +332,7 @@ def parse_fn(src: list, src_file: str, define_line_index: int, lambda_owner: FnI
                 if clousure_depth == 0:
                     end_line = i + define_line_index
 
-                    if not j + 1 == len(line.split('//', 1)[0]) and lambda_owner == None:
+                    if not j + 1 == len(line.split('//', 1)[0].strip()) and lambda_owner == None:
                         raise CompileError("syntax error - expected a new line after fn final \'}\'", src_file, i + define_line_index, src) 
 
                     break
@@ -365,9 +372,8 @@ def parse_fn(src: list, src_file: str, define_line_index: int, lambda_owner: FnI
     if not len(tem_args) == 0:
         implicit_usage = False
 
-    # must not use the commit keyword to be implicitly used
-    # FIXME: might give false positive with a fn name that ends with 'commit'
-    elif "commit(" in inline_fn_src or "commit " in inline_fn_src or "commit;" in inline_fn_src:
+    # must not be a slicing fn to be implicitly used
+    elif is_slice:
         implicit_usage = False
 
     # lambdas can contain inherited template args which we cannot check here
@@ -375,7 +381,7 @@ def parse_fn(src: list, src_file: str, define_line_index: int, lambda_owner: FnI
     elif not lambda_owner == None:
         implicit_usage = False
 
-    fn = FnPrototypeAst(name=fn_name, fn_src=inline_fn_src, src=src, src_file=src_file, ending_line_of_definition=end_line, line_of_definition=define_line_index, template_args=tem_args, top_level_implicit_usage=implicit_usage)
+    fn = FnPrototypeAst(name=fn_name, fn_src=inline_fn_src, src=src, src_file=src_file, ending_line_of_definition=end_line, line_of_definition=define_line_index, template_args=tem_args, top_level_implicit_usage=implicit_usage, is_slice_valid=is_slice)
     defined_fn_prototypes[fn_name] = fn
 
     return fn
@@ -442,8 +448,6 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
         fn_src = fn_src.replace('[' + arg + ']', to_insert[i])
 
     # parse and compile fn segments
-
-    # FIXME: commit validation
 
     while fn_src[i] != '{':
         i += 1
@@ -726,18 +730,11 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, recall_fn_instance.comp_name, '\n'))
             elif acc.startswith("commit"):
+                if not fn_proto.is_slice_valid:
+                    raise CompileError(f"cannot use the commit keyword inside a non-slice fn (see numka slice fn docs)", fn_proto.src_file, line_index, fn_proto.src)
+
                 if not call_loc.callee_commit_dest_fn is None:
-                    if '(' in acc and not ')' in acc:
-                        raise CompileError("syntax error - unexpected \';\' inside a template args closure", fn_proto.src_file, line_index, fn_proto.src)
-
-                    tem_args, size_read = parse_template_args(fn_proto.src, fn_proto.src_file, line_index, acc, args)
-                    
-                    if size_read == 0:
-                        acc = acc[6:]
-                    else:
-                        acc = acc[size_read + 1:]
-
-                    acc = acc.strip()
+                    acc = acc[6:].strip()
 
                     if not acc == '':
                         raise CompileError(f"syntax error - expected a ';' after a commit keyword", fn_proto.src_file, line_index, fn_proto.src)
@@ -802,6 +799,9 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
 
                     if callee_fn is None:
                         raise CompileError(f"call to an undefined push fn \"{acc}\"", fn_proto.src_file, line_index, fn_proto.src)
+
+                    elif not callee_fn.is_slice_valid:
+                        raise CompileError(f"cannot push a non-slice fn \"{acc}\"", fn_proto.src_file, line_index, fn_proto.src)
 
                     push_loc = CallLocationAst(
                         caller_fn_name=fn_proto.name, 
@@ -899,7 +899,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     caller_fn_name=fn_proto.name,
                     callee_fn_name=acc,
                     template_arg_values=tem_args,
-                    callee_commit_dest_fn=None,
+                    callee_commit_dest_fn=call_loc.callee_commit_dest_fn if callee_fn.is_slice_valid else None, # can commit for the current fn push (if it's also a slicing fn)
                     src=fn_proto.src,
                     src_file=fn_proto.src_file,
                     caller_line_index=line_index

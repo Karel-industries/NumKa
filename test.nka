@@ -14,7 +14,7 @@ fn help {
 
     set_value(5);
 
-    v_w = push set_value(2); // NOTE: will fail in future when commit validation will be implemented! (set_value doesn't commit)
+    // v_w = push set_value(2); // NOTE: this fails to compile as set_value is not a slicing fn
 
     v_l = push returning_to_wall;
 
@@ -73,7 +73,7 @@ fn help {
     pop v_l2;
     pop v_l;
 
-    pop v_w;
+    // pop v_w;
 
     place;
 }

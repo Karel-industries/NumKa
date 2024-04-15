@@ -240,13 +240,113 @@ fn my_func(v) {
 ## Stack Semantics
 
 > [!warning]
-> Stack semantics and their compiler support has **not** been done yet. The following is purely informational and very **WIP**
+> Stack semantics and their compiler support is currently in it's early stages and is still considired **alpha** status. The support for the following is still very **WIP**
 
-NumKa keywords related to the advanced language support for call stack operations and "stack slices"
+This section describes the NumKa language and compiler support for advanced call stack operations and "stack slices". With stack slices, numka allows to store limited stack-like memory and values inside karels function call stack with a variable like syntax.
+
+A stack slice is a representation of a known part (a "slice") of the current call stack. (on the "stack") They can be created by calling (`push`ing) a [slice fn](#slice-fn) and capturing it as a stack slice. Then to "access" a slice you must `pop` it (destroying it in the process) which will return trough the call stack and trough the slice.
+
+Due to the call stack based storage of stack slices, all slice lifetimes are relative to the current *scope*, that is that all slices can only exists and be accessed from the current `fn` or [lambda](#lambda-support) and cannot outlive it.
+
+An example of where stack slices could be used is temporary storage for moving data around karels city
+```
+// define a slice fn that memorizes a value at the current position and writes it on a pop
+
+fn store_value slicing {
+	if is_flag {
+		--;
+		recall;
+		++;
+	} else {
+		commit;
+	}
+}
+
+// moves a value a step forward by using the store_value slice fn
+fn move_value {
+	val = push store_value;
+
+	step;
+
+	pop val;
+}
+```
+
+> [!warning]
+> Due to limitations of this method and the current compiler support, all slices can and must be accessed using a FILO (First In Last Out) order to preserve the call stack order.
+
+> [!note]
+> In the future some out-of-order stack operations (like `return push` which outlives a fn) may be supported but their usage and requirements would be strict and their support is not currenly planed 
+
+#### Slice Fn
+
+Slice `fn` is a `fn` which supports being a part of a [push](#push-keyword). A slice `fn` has additional requirements that **must** be followed by the user as these **cannot** be checked by the compiler. 
+
+A slice `fn` is defined by including the `slicing` keyword after the `fn` name in its definition, by defining a `fn` as `slicing` you **guarantee** to the compiler that you as the user followed the following slice `fn` requirements:
+- the `fn` or other `fns` or [lambdas](#lambda-support) contain a commit keyword
+- when pushing, the `commit` keyword is invoked **exactly once** for the entire push
+
+> [!warning]
+> Failing to follow the slice `fn` requirements will not generate *any* compiler errors or warnings but *will* generate faulty karel-lang output.
+
+An example of a simple slice fn:
+```
+// stores if a flag has been present when a slice has been pushed and adds a flag when the slice is poped 
+
+fn store_flag slicing {
+	if is_flag {
+		commit;
+		++;
+	} else {
+		commit;
+	}
+}
+```
+
+#### `push` keyword
+
+A `push` is an abstraction of calling a slice `fn` to save a slice on the call stack. It can be used with the *slice assigment* syntax to create new stack slices.
+
+Continuing the above example of `store_flag`:
+```
+...
+
+// check for flag and move to the side to add the result
+
+fn check_flag {
+	slice = push store_flag;
+
+	for 3 { step; }
+
+	...
+```
+
+> [!note]
+> Slice `push` operations count as a "normal" `fn` calls so templates can be used with the same syntax.
+
+#### `pop` keyword
+
+A `pop` is an abstraction of retuning trough a saved slice of the call stack. To `pop` a slice, just pass in a `pop` keyword with the slice variable you want to `pop`. All slices have to be `pop`ed in the opposite order they were `push`ed. (only the newest `push`ed slice can be `pop`ed)
+
+Continuing the above example of `store_flag` and `check_flag`:
+```
+	...
+
+	pop slice;
+}
+```
+
+> [!note]
+> All slices `push`ed on the stack must also be `pop`ed before the `fn` ending (no slices can be discarded)
 
 #### `commit` keyword
 
-> [!note]
-> This keyword is supposed to be used for stack `push` operations. If `commit` is used outside of a `push` a warning will be printed and the keyword ignored.
+The `commit` keyword is a part of a slice `fn` and shouldn't be used outside of `push` operations.
 
-The `commit` keyword signals the compiler that at the point of the keyword is the exit point of the `push` and where the following *segment shim* of the caller should be called
+The `commit` keyword signals to the compiler that the stack slice in it's current form should be saved until it is `pop`ed. The compiler will then insert a call to the next *segment* of the `fn` that `push`ed the slice to continue execution.
+
+> [!warning]
+> Due to the implementation of stack slices, it is the *responsibility* of the *user* to invoke the `commit` keyword **exactly once** in a `push` operation. See [slice fns](#slice-fn) for more info.
+
+> [!note]
+> This keyword is supposed to be used inside [slice fns](#slice-fn). If `commit` is used outside of a slice `fn` a warning will be printed and the keyword ignored.

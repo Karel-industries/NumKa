@@ -27,7 +27,7 @@ fn set_value(val) {
 }
 
 // square for storing value must be empty
-fn move_value {
+fn move_value slicing {
     if is_flag {
         pick;
         recall;
@@ -37,7 +37,7 @@ fn move_value {
     }
 }
 
-fn returning_to_wall {
+fn returning_to_wall slicing {
     if not_wall {
         step;
         recall;
