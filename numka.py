@@ -302,11 +302,13 @@ def parse_fn(src: list, src_file: str, define_line_index: int, lambda_owner: FnI
     
     is_slice = False
     if lambda_owner == None:
-        fn_name = src[define_line_index].split('//', 1)[0].strip()[3:].lstrip().split('(', 1)[0].rstrip(" {")
+        fn_name = src[define_line_index].split('//', 1)[0].strip()[3:].rstrip("{").strip()
 
         if fn_name.endswith(" slicing"):
             is_slice = True
-            fn_name = fn_name[:-6].strip()
+            fn_name = fn_name[:-8].strip()
+
+        fn_name = fn_name.split('(', 1)[0].strip()
 
         if ' ' in fn_name:
             raise CompileError("syntax error - fn name cannot contain spaces", src_file, define_line_index, src)
