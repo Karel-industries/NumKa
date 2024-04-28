@@ -6,7 +6,7 @@ import os
 
 # == compiler globals ==
 
-version = "v0.2.1"
+version = "v0.2.2"
 
 source_file_compiled = {}
 import_paths = []
@@ -231,24 +231,39 @@ def parse_template_args(src: list, src_file: str, src_line: int, call_exp: str, 
         return (tuple(), 0)
     
     # find template args clousure end
-    j = i + 1
+    i += 1
+    j = i
+
+    template_args = []
+    clousure_depth = 1
 
     while j < len(call_exp):
         c = call_exp[j]
 
         if c == '(':
-            raise CompileError("syntax error - unexpected \'(\' after template expression", src_file, src_line, src)
+            clousure_depth += 1
+            
+            # raise CompileError("syntax error - unexpected \'(\' after template expression", src_file, src_line, src)
 
-        if c == ')':
-            break
+        elif c == ')':
+            clousure_depth -= 1
+
+            if clousure_depth == 0:
+                template_args.append(call_exp[i:j])
+                i = j + 1
+
+                break
+        
+        elif c == ',':
+            template_args.append(call_exp[i:j])
+            i = j + 1
 
         j += 1
     
     if j == len(call_exp):
         raise CompileError("unexpected end of file - template args expression never closed", src_file, src_line, src)
 
-    # parse template args
-    template_args = call_exp[i + 1:j].split(',')
+    # cleanup template args
 
     for i in range(len(template_args)):
         template_args[i] = template_args[i].strip()
@@ -392,7 +407,7 @@ def gen_comp_name(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, seg_index
     if not args.g:
         return fn_proto.name + ('' if seg_index == 0 else f"_seg{seg_index}") + f"<ch{hash(call_loc.callee_commit_dest_fn.comp_name) if not call_loc.callee_commit_dest_fn is None else '-none'}-th{hash(call_loc.template_arg_values + call_loc.inherited_template_arg_values) if len(call_loc.template_arg_values) + len(call_loc.inherited_template_arg_values) else '-none'}>"
     else:
-        return fn_proto.name + ('' if seg_index == 0 else f"_seg{seg_index}") + f"<commit-loc={call_loc.callee_commit_dest_fn.comp_name if not call_loc.callee_commit_dest_fn is None else 'none'}|template-args={call_loc.template_arg_values}{f'+inherited={call_loc.inherited_template_arg_values}' if len(call_loc.inherited_template_arg_values) > 0 else ''}>"
+        return fn_proto.name + ('' if seg_index == 0 else f"_seg{seg_index}") + f"<commit-loc={call_loc.callee_commit_dest_fn.comp_name if not call_loc.callee_commit_dest_fn is None else 'none'}|template-args={call_loc.template_arg_values}{f'+inherited={call_loc.inherited_template_arg_values}' if len(call_loc.inherited_template_arg_values) > 0 else ''}>".replace(' ', '')
 
 # returns a precompiled FnInstanceAst if it has already been compiled with the same template args and commit fn 
 def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argparse.Namespace) -> FnInstanceAst:

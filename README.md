@@ -192,6 +192,30 @@ fn my_func {
 }
 ```
 
+It is also fully supported and correct to have multiple levels of *template arg values* inside one another
+
+```
+fn move_kyte(move_impl) {
+	if is_flag {
+		--;
+		recall;
+		++;
+	} else {
+		[move_impl];
+	}
+}
+
+fn do_stuff {
+	
+	...
+
+	do_stuff(step_for(5));
+
+	...
+
+}
+```
+
 > [!note]
 > Note that the `recall` keyword also counts as a `fn` call and so can include *template arg values* for the current `fn`. In the case that a recall keyword in a fn template doesn't have *template arg values* the current *values* from the current fn are used implicitly
 > 
