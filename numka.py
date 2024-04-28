@@ -254,7 +254,7 @@ def parse_template_args(src: list, src_file: str, src_line: int, call_exp: str, 
 
                 break
         
-        elif c == ',':
+        elif c == ',' and clousure_depth == 1:
             template_args.append(call_exp[i:j])
             i = j + 1
 
