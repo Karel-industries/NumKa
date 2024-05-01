@@ -147,6 +147,29 @@ fn recursive_clear {
 }
 ```
 
+#### `no_op` keyword
+
+The `no_op` is a valid keyword which is ignored by the compiler and does not produce any karel-lang code to the output, it is mostly used in the context of [templates](#template-support) as they cannot contain empty values so a `no_op` is an alternative in some cases.
+
+```
+fn composite_fn(on_no_flag) {
+	...
+	
+	if is_flag {
+		--;
+	} else {
+		[on_no_flag];
+	}
+
+	...
+}
+
+fn my_func {
+	// do not care about no_flag case
+	composite_fn(no_op);
+}
+```
+
 ## Template Support
 
 NumKa is built on a very limited platform in regards to runtime code flexibility. This causes problems when trying to reuse code as defined functions are fixed in place and cannot be modified to allow for reuse in other parts of the code base.

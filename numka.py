@@ -6,7 +6,7 @@ import os
 
 # == compiler globals ==
 
-version = "v0.2.2"
+version = "v0.3.0"
 
 source_file_compiled = {}
 import_paths = []
@@ -114,6 +114,7 @@ def status_print(file: str):
     last_status = file
 
     print(f"\x1b[1K\r{bold_escape}Compiling:{reset_escape} {file}", end="")
+    # print(f"{bold_escape}Compiling:{reset_escape} {file}", end="\n")
 
 def reset_status():
     print()
@@ -414,6 +415,11 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
     i = 0
     line_index = fn_proto.line_of_definition
 
+    # status_print(f"{fn_proto.name} in {fn_proto.src_file}")
+
+    # import time
+    # time.sleep(.05)
+
     # create fn instance ast
 
     comp_name = gen_comp_name(fn_proto, call_loc, 0)
@@ -428,7 +434,7 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
     if comp_name in instaciated_fns:
         return instaciated_fns[comp_name]
 
-    fn = FnInstanceAst(name=fn_proto.name, comp_name=comp_name, commit_fn=call_loc.callee_commit_dest_fn, instance_template_args=call_loc.template_arg_values, inherited_template_arg_values=call_loc.template_arg_values + call_loc.inherited_template_arg_values, inherited_template_args=fn_proto.template_args + call_loc.inherited_template_args)
+    fn = FnInstanceAst(name=fn_proto.name, comp_name=comp_name, commit_fn=call_loc.callee_commit_dest_fn, instance_template_args=call_loc.template_arg_values, inherited_template_arg_values=call_loc.inherited_template_arg_values, inherited_template_args=call_loc.inherited_template_args)
     instaciated_fns[comp_name] = fn
 
     # define function in output source
@@ -653,8 +659,8 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     caller_fn_name=fn_proto.name,
                     callee_fn_name=lambda_proto.name,
                     template_arg_values=tem_args,
-                    inherited_template_arg_values=fn.inherited_template_arg_values,
-                    inherited_template_args=fn.inherited_template_args,
+                    inherited_template_arg_values=call_loc.template_arg_values + fn.inherited_template_arg_values,
+                    inherited_template_args=fn_proto.template_args + fn.inherited_template_args,
                     callee_commit_dest_fn=call_loc.callee_commit_dest_fn, # lambdas can commit parents pushes
                     src=fn_proto.src,
                     src_file=fn_proto.src_file,
@@ -713,6 +719,11 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                 pass
             elif acc in builtin_fns:
                 current_comp_segment = ''.join((current_comp_segment, '   ' * current_comp_segment_depth, f"{builtin_fns[acc]}\n"))
+            elif acc.startswith("no_op"):
+                if not acc.strip() == "no_op":
+                    raise CompileError(f"syntax error - expected a ';' after a no_op keyword", fn_proto.src_file, line_index, fn_proto.src)
+
+                pass # no_op does a no-op
             elif acc.startswith("recall"):
                 # if '(' in acc and not ')' in acc:
                 #     raise CompileError("syntax error - unexpected \';\' inside a template args closure", fn_proto.src_file, line_index, fn_proto.src)
@@ -734,6 +745,8 @@ def compile_fn(fn_proto: FnPrototypeAst, call_loc: CallLocationAst, args: argpar
                     caller_fn_name=fn_proto.name, 
                     callee_fn_name=fn_proto.name,
                     template_arg_values=call_loc.template_arg_values if len(tem_args) == 0 else tem_args,
+                    inherited_template_arg_values=fn.inherited_template_arg_values,
+                    inherited_template_args=fn.inherited_template_args,
                     callee_commit_dest_fn=call_loc.callee_commit_dest_fn,
                     src=fn_proto.src,
                     src_file=fn_proto.src_file,
